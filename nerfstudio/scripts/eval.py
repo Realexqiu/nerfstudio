@@ -56,6 +56,7 @@ class ComputePSNR:
             "checkpoint": str(checkpoint_path),
             "results": metrics_dict,
         }
+        print(metrics_dict)
         # Save output to output file
         self.output_path.write_text(json.dumps(benchmark_info, indent=2), "utf8")
         CONSOLE.print(f"Saved results to: {self.output_path}")

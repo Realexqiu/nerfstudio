@@ -205,8 +205,8 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
             data = dataset.get_data(idx, image_type=self.config.cache_images_type)
             camera = dataset.cameras[idx].reshape(())
             assert data["image"].shape[1] == camera.width.item() and data["image"].shape[0] == camera.height.item(), (
-                f"The size of image ({data['image'].shape[1]}, {data['image'].shape[0]}) loaded "
-                f"does not match the camera parameters ({camera.width.item(), camera.height.item()})"
+                f'The size of image ({data["image"].shape[1]}, {data["image"].shape[0]}) loaded '
+                f'does not match the camera parameters ({camera.width.item(), camera.height.item()})'
             )
             if camera.distortion_params is None or torch.all(camera.distortion_params == 0):
                 return data
@@ -228,18 +228,21 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
             return data
 
         CONSOLE.log(f"Caching / undistorting {split} images")
+        # with ThreadPoolExecutor(max_workers=2) as executor:
+        #     undistorted_images = list(
+        #         track(
+        #             executor.map(
+        #                 undistort_idx,
+        #                 range(len(dataset)),
+        #             ),
+        #             description=f"Caching / undistorting {split} images",
+        #             transient=True,
+        #             total=len(dataset),
+        #         )
+        #     )
+
         with ThreadPoolExecutor(max_workers=2) as executor:
-            undistorted_images = list(
-                track(
-                    executor.map(
-                        undistort_idx,
-                        range(len(dataset)),
-                    ),
-                    description=f"Caching / undistorting {split} images",
-                    transient=True,
-                    total=len(dataset),
-                )
-            )
+            undistorted_images = list(executor.map(undistort_idx, range(len(dataset))))     
 
         # Move to device.
         if cache_images_device == "gpu":
@@ -260,6 +263,8 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
             assert_never(cache_images_device)
 
         return undistorted_images
+
+
 
     def create_train_dataset(self) -> TDataset:
         """Sets up the data loaders for training"""
@@ -344,6 +349,7 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         """Returns the next training batch
 
         Returns a Camera instead of raybundle"""
+
         image_idx = self.train_unseen_cameras.pop(0)
         # Make sure to re-populate the unseen cameras list if we have exhausted it
         if len(self.train_unseen_cameras) == 0:
@@ -360,6 +366,7 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         if camera.metadata is None:
             camera.metadata = {}
         camera.metadata["cam_idx"] = image_idx
+
         return camera, data
 
     def next_eval(self, step: int) -> Tuple[Cameras, Dict]:
@@ -383,6 +390,7 @@ class FullImageDatamanager(DataManager, Generic[TDataset]):
         data["image"] = data["image"].to(self.device)
         assert len(self.eval_dataset.cameras.shape) == 1, "Assumes single batch dimension"
         camera = self.eval_dataset.cameras[image_idx : image_idx + 1].to(self.device)
+        import pdb; pdb.set_trace()
         return camera, data
 
 

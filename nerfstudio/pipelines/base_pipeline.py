@@ -19,6 +19,7 @@ Abstracts for the Pipeline class.
 from __future__ import annotations
 
 import typing
+import inspect
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -296,6 +297,7 @@ class VanillaPipeline(Pipeline):
         Args:
             step: current iteration step to update sampler if using DDP (distributed)
         """
+
         ray_bundle, batch = self.datamanager.next_train(step)
         model_outputs = self._model(ray_bundle)  # train distributed data parallel model if world_size > 1
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
@@ -364,6 +366,10 @@ class VanillaPipeline(Pipeline):
         Returns:
             metrics_dict: dictionary of metrics
         """
+        caller_frame = inspect.currentframe().f_back
+        caller_name = caller_frame.f_code.co_name
+        print(f"Called from: {caller_name}")
+        # import pdb; pdb.set_trace()
         self.eval()
         metrics_dict_list = []
         num_images = len(data_loader)
@@ -422,9 +428,9 @@ class VanillaPipeline(Pipeline):
         self, step: Optional[int] = None, output_path: Optional[Path] = None, get_std: bool = False
     ):
         """Get the average metrics for evaluation images."""
-        assert hasattr(self.datamanager, "fixed_indices_eval_dataloader"), (
-            "datamanager must have 'fixed_indices_eval_dataloader' attribute"
-        )
+        assert hasattr(
+            self.datamanager, "fixed_indices_eval_dataloader"
+        ), "datamanager must have 'fixed_indices_eval_dataloader' attribute"
         image_prefix = "eval"
         return self.get_average_image_metrics(
             self.datamanager.fixed_indices_eval_dataloader, image_prefix, step, output_path, get_std

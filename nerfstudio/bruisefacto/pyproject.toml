@@ -1,0 +1,13 @@
+[project]
+name = "bruisefacto"
+description = "Bruisefacto repository that uses splatfacto as base model."
+version = "0.1.0"
+
+dependencies = ["nerfstudio >= 0.3.0"] 
+
+[tool.setuptools.packages.find]
+include = ["bruisefacto*"]
+
+# register the entry point of your new method here:
+[project.entry-points.'nerfstudio.method_configs']
+bruisefacto = 'bruisefacto.bruisefacto_config:bruisefacto_method'

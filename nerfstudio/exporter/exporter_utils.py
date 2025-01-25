@@ -88,6 +88,7 @@ def generate_point_cloud(
     reorient_normals: bool = False,
     rgb_output_name: str = "rgb",
     depth_output_name: str = "depth",
+    bruise_output_name: str = "bruise",
     normal_output_name: Optional[str] = None,
     crop_obb: Optional[OrientedBox] = None,
     std_ratio: float = 10.0,
@@ -118,6 +119,7 @@ def generate_point_cloud(
     )
     points = []
     rgbs = []
+    bruises = []  # To store bruise values
     normals = []
     view_directions = []
     with progress as progress_bar:
@@ -139,18 +141,23 @@ def generate_point_cloud(
                 CONSOLE.print(f"Could not find {depth_output_name} in the model outputs", justify="center")
                 CONSOLE.print(f"Please set --depth_output_name to one of: {outputs.keys()}", justify="center")
                 sys.exit(1)
+            if bruise_output_name not in outputs:
+                CONSOLE.rule("Error", style="red")
+                CONSOLE.print(f"Could not find {bruise_output_name} in the model outputs", justify="center")
+                sys.exit(1)
             rgba = pipeline.model.get_rgba_image(outputs, rgb_output_name)
             depth = outputs[depth_output_name]
+            bruise = outputs[bruise_output_name]
             if normal_output_name is not None:
                 if normal_output_name not in outputs:
                     CONSOLE.rule("Error", style="red")
                     CONSOLE.print(f"Could not find {normal_output_name} in the model outputs", justify="center")
                     CONSOLE.print(f"Please set --normal_output_name to one of: {outputs.keys()}", justify="center")
-                    sys.exit(1)
+                    # sys.exit(1)
                 normal = outputs[normal_output_name]
-                assert torch.min(normal) >= 0.0 and torch.max(normal) <= 1.0, (
-                    "Normal values from method output must be in [0, 1]"
-                )
+                assert (
+                    torch.min(normal) >= 0.0 and torch.max(normal) <= 1.0
+                ), "Normal values from method output must be in [0, 1]"
                 normal = (normal * 2.0) - 1.0
             point = ray_bundle.origins + ray_bundle.directions * depth
             view_direction = ray_bundle.directions
@@ -160,6 +167,7 @@ def generate_point_cloud(
             point = point[mask]
             view_direction = view_direction[mask]
             rgb = rgba[mask][..., :3]
+            bruise = bruise[mask]
             if normal is not None:
                 normal = normal[mask]
 
@@ -168,17 +176,20 @@ def generate_point_cloud(
                 point = point[mask]
                 rgb = rgb[mask]
                 view_direction = view_direction[mask]
+                bruise = bruise[mask]
                 if normal is not None:
                     normal = normal[mask]
 
             points.append(point)
             rgbs.append(rgb)
+            bruises.append(bruise)
             view_directions.append(view_direction)
             if normal is not None:
                 normals.append(normal)
             progress.advance(task, point.shape[0])
     points = torch.cat(points, dim=0)
     rgbs = torch.cat(rgbs, dim=0)
+    bruises = torch.cat(bruises, dim=0)  # Concatenate bruise values
     view_directions = torch.cat(view_directions, dim=0).cpu()
 
     import open3d as o3d
@@ -186,6 +197,7 @@ def generate_point_cloud(
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points.double().cpu().numpy())
     pcd.colors = o3d.utility.Vector3dVector(rgbs.double().cpu().numpy())
+    pcd.bruise = bruises.cpu().numpy()  # Save bruising as an attribute
 
     ind = None
     if remove_outliers:
@@ -195,6 +207,10 @@ def generate_point_cloud(
         CONSOLE.print("[bold green]:white_check_mark: Cleaning Point Cloud")
         if ind is not None:
             view_directions = view_directions[ind]
+            bruises = bruises[ind]
+
+    # Attach bruises back to the point cloud after filtering
+    pcd.bruise = bruises.cpu().numpy()
 
     # either estimate_normals or normal_output_name, not both
     if estimate_normals:

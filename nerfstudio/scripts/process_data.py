@@ -36,6 +36,7 @@ from nerfstudio.process_data import (
 from nerfstudio.process_data.colmap_converter_to_nerfstudio_dataset import BaseConverterToNerfstudioDataset
 from nerfstudio.process_data.images_to_nerfstudio_dataset import ImagesToNerfstudioDataset
 from nerfstudio.process_data.video_to_nerfstudio_dataset import VideoToNerfstudioDataset
+from nerfstudio.process_data.video_to_nerfstudio_dataset_yolo import VideoToNerfstudioDatasetYOLO
 from nerfstudio.utils.rich_utils import CONSOLE
 
 
@@ -49,11 +50,6 @@ class ProcessRecord3D(BaseConverterToNerfstudioDataset):
     2. Converts Record3D poses into the nerfstudio format.
     """
 
-    ply_dir: Optional[Path] = None
-    """Path to the Record3D directory of point export ply files."""
-    voxel_size: Optional[float] = 0.8
-    """Voxel size for down sampling dense point cloud"""
-
     num_downscales: int = 3
     """Number of times to downscale the images. Downscales by 2 each time. For example a value of 3
         will downscale the images by 2x, 4x, and 8x."""
@@ -63,7 +59,7 @@ class ProcessRecord3D(BaseConverterToNerfstudioDataset):
 
     def main(self) -> None:
         """Process images into a nerfstudio dataset."""
-
+        print("In process record3d")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         image_dir = self.output_dir / "images"
         image_dir.mkdir(parents=True, exist_ok=True)
@@ -106,14 +102,7 @@ class ProcessRecord3D(BaseConverterToNerfstudioDataset):
             )
 
         metadata_path = self.data / "metadata.json"
-        record3d_utils.record3d_to_json(
-            copied_image_paths,
-            metadata_path,
-            self.output_dir,
-            indices=idx,
-            ply_dirname=self.ply_dir,
-            voxel_size=self.voxel_size,
-        )
+        record3d_utils.record3d_to_json(copied_image_paths, metadata_path, self.output_dir, indices=idx)
         CONSOLE.rule("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
 
         for summary in summary_log:
@@ -524,6 +513,7 @@ class NotInstalled:
 Commands = Union[
     Annotated[ImagesToNerfstudioDataset, tyro.conf.subcommand(name="images")],
     Annotated[VideoToNerfstudioDataset, tyro.conf.subcommand(name="video")],
+    Annotated[VideoToNerfstudioDatasetYOLO, tyro.conf.subcommand(name="video-yolo")],
     Annotated[ProcessPolycam, tyro.conf.subcommand(name="polycam")],
     Annotated[ProcessMetashape, tyro.conf.subcommand(name="metashape")],
     Annotated[ProcessRealityCapture, tyro.conf.subcommand(name="realitycapture")],

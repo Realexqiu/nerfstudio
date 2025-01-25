@@ -95,7 +95,7 @@ def run_colmap(
     camera_model: CameraModel,
     camera_mask_path: Optional[Path] = None,
     gpu: bool = True,
-    verbose: bool = False,
+    verbose: bool = True,
     matching_method: Literal["vocab_tree", "exhaustive", "sequential"] = "vocab_tree",
     refine_intrinsics: bool = True,
     colmap_cmd: str = "colmap",
@@ -115,7 +115,9 @@ def run_colmap(
     """
 
     colmap_version = get_colmap_version(colmap_cmd)
-
+    print("Running COLMAP version", colmap_version)
+    print("Running run_colmap function in colmap_utils.py")
+    verbose = False # False if you don't want continuous output in terminal
     colmap_database_path = colmap_dir / "database.db"
     colmap_database_path.unlink(missing_ok=True)
 
@@ -124,9 +126,11 @@ def run_colmap(
         f"{colmap_cmd} feature_extractor",
         f"--database_path {colmap_dir / 'database.db'}",
         f"--image_path {image_dir}",
-        "--ImageReader.single_camera 1",
-        f"--ImageReader.camera_model {camera_model.value}",
-        f"--SiftExtraction.use_gpu {int(gpu)}",
+        f"--SiftExtraction.estimate_affine_shape=true",
+        f"--SiftExtraction.domain_size_pooling=true",
+        # "--ImageReader.single_camera 1", ## commented out by Alex Qiu
+        # f"--ImageReader.camera_model {camera_model.value}",
+        # f"--SiftExtraction.use_gpu {int(gpu)}",
     ]
     if camera_mask_path is not None:
         feature_extractor_cmd.append(f"--ImageReader.camera_mask_path {camera_mask_path}")
@@ -136,19 +140,33 @@ def run_colmap(
 
     CONSOLE.log("[bold green]:tada: Done extracting COLMAP features.")
 
-    # Feature matching
-    feature_matcher_cmd = [
-        f"{colmap_cmd} {matching_method}_matcher",
+    # Exhaustive matching ADDED BY ALEX QIU (Using exhaustive matching instead of feature matching seems to allow for colmap to be more successful)
+    exhaustive_matcher_cmd = [
+        f"{colmap_cmd} exhaustive_matcher",
         f"--database_path {colmap_dir / 'database.db'}",
-        f"--SiftMatching.use_gpu {int(gpu)}",
+        f"--SiftMatching.guided_matching=true",
     ]
-    if matching_method == "vocab_tree":
-        vocab_tree_filename = get_vocab_tree()
-        feature_matcher_cmd.append(f'--VocabTreeMatching.vocab_tree_path "{vocab_tree_filename}"')
-    feature_matcher_cmd = " ".join(feature_matcher_cmd)
-    with status(msg="[bold yellow]Running COLMAP feature matcher...", spinner="runner", verbose=verbose):
-        run_command(feature_matcher_cmd, verbose=verbose)
-    CONSOLE.log("[bold green]:tada: Done matching COLMAP features.")
+    exhaustive_matcher_cmd = " ".join(exhaustive_matcher_cmd)
+    with status(msg="[bold yellow]Running COLMAP exhaustive matcher...", spinner="runner", verbose=verbose):
+        run_command(exhaustive_matcher_cmd, verbose=verbose)
+
+    CONSOLE.log("[bold green]:tada: Done running COLMAP exhaustive matcher.")
+
+    ## END OF EDITS BY ALEX QIU
+
+    # # Feature matching
+    # feature_matcher_cmd = [
+    #     f"{colmap_cmd} {matching_method}_matcher",
+    #     f"--database_path {colmap_dir / 'database.db'}",
+    #     f"--SiftMatching.use_gpu {int(gpu)}",
+    # ]
+    # if matching_method == "vocab_tree":
+    #     vocab_tree_filename = get_vocab_tree()
+    #     feature_matcher_cmd.append(f'--VocabTreeMatching.vocab_tree_path "{vocab_tree_filename}"')
+    # feature_matcher_cmd = " ".join(feature_matcher_cmd)
+    # with status(msg="[bold yellow]Running COLMAP feature matcher...", spinner="runner", verbose=verbose):
+    #     run_command(feature_matcher_cmd, verbose=verbose)
+    # CONSOLE.log("[bold green]:tada: Done matching COLMAP features.")
 
     # Bundle adjustment
     sparse_dir = colmap_dir / "sparse"
@@ -158,10 +176,8 @@ def run_colmap(
         f"--database_path {colmap_dir / 'database.db'}",
         f"--image_path {image_dir}",
         f"--output_path {sparse_dir}",
-    ]
-    if colmap_version >= Version("3.7"):
-        mapper_cmd.append("--Mapper.ba_global_function_tolerance=1e-6")
 
+    ]
     mapper_cmd = " ".join(mapper_cmd)
 
     with status(

@@ -45,6 +45,7 @@ from nerfstudio.exporter.exporter_utils import collect_camera_poses, generate_po
 from nerfstudio.exporter.marching_cubes import generate_mesh_with_multires_marching_cubes
 from nerfstudio.fields.sdf_field import SDFField  # noqa
 from nerfstudio.models.splatfacto import SplatfactoModel
+from nerfstudio.bruisefacto.bruisefacto.bruisefacto import BruisefactoModel
 from nerfstudio.pipelines.base_pipeline import Pipeline, VanillaPipeline
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import CONSOLE
@@ -159,6 +160,7 @@ class ExportPointCloud(Exporter):
             estimate_normals=estimate_normals,
             rgb_output_name=self.rgb_output_name,
             depth_output_name=self.depth_output_name,
+            bruise_output_name="bruise",
             normal_output_name=self.normal_output_name if self.normal_method == "model_output" else None,
             crop_obb=crop_obb,
             std_ratio=self.std_ratio,
@@ -504,6 +506,8 @@ class ExportGaussianSplat(Exporter):
     """If "rgb", export colors as red/green/blue fields. Otherwise, export colors as
     spherical harmonics coefficients."""
 
+    include_bruise = True
+
     @staticmethod
     def write_ply(
         filename: str,
@@ -566,13 +570,14 @@ class ExportGaussianSplat(Exporter):
 
         _, pipeline, _, _ = eval_setup(self.load_config, test_mode="inference")
 
-        assert isinstance(pipeline.model, SplatfactoModel)
+        assert isinstance(pipeline.model, BruisefactoModel)
 
-        model: SplatfactoModel = pipeline.model
+        model: BruisefactoModel = pipeline.model
 
         filename = self.output_dir / self.output_filename
 
         map_to_tensors = OrderedDict()
+
 
         with torch.no_grad():
             positions = model.means.cpu().numpy()

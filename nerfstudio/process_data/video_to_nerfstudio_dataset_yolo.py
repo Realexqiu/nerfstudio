@@ -21,16 +21,21 @@ from typing import Literal, Optional
 from nerfstudio.process_data import equirect_utils, process_data_utils
 from nerfstudio.process_data.colmap_converter_to_nerfstudio_dataset import ColmapConverterToNerfstudioDataset
 from nerfstudio.utils.rich_utils import CONSOLE
-
+import ultralytics
+from ultralytics import YOLO
+import cv2
+import numpy as np
+from pathlib import Path
 
 @dataclass
-class VideoToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
+class VideoToNerfstudioDatasetYOLO(ColmapConverterToNerfstudioDataset):
     """Process videos into a nerfstudio dataset.
 
     This script does the following:
 
     1. Converts the video into images and downscales them.
     2. Calculates the camera poses for each image using `COLMAP <https://colmap.github.io/>`_.
+    3. Applies YOLO segmentation model to images and outputs corresponding bruise masks
     """
 
     num_frames_target: int = 300
@@ -46,9 +51,12 @@ class VideoToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
     eval_random_seed: Optional[int] = None
     """Random seed to select video frames for eval set"""
 
+    # Path to best weights for YOLO segmentation model
+    yolo_weights_path = Path(__file__).parent.parent / 'bruisefacto' / 'bruisefacto' / 'best.pt'
+
     def main(self) -> None:
         """Process video into a nerfstudio dataset."""
-        print("Running video_to_nerfstudio_dataset.py script.")
+        print("Running video_to_nerfstudio_dataset_yolo.py script.")
         summary_log = []
         summary_log_eval = []
         # Convert video to images
@@ -146,7 +154,56 @@ class VideoToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
 
         summary_log += self._save_transforms(num_extracted_frames, image_id_to_depth_path, mask_path)
 
+        ## YOLO Segmentation -----------------------------------------------------------------------------------------
+        
+        # import pdb; pdb.set_trace()
+
+        # Apply YOLO segmentation model to each image
+        if self.yolo_weights_path is not None:
+
+            bruise_counter = 0
+            yolo_model = YOLO(self.yolo_weights_path)
+            mask_dir = self.output_dir / "yolo_masks"
+            mask_dir.mkdir(parents=True, exist_ok=True)
+
+            # Iterate through each image in the image directory
+            for image_path in self.image_dir.iterdir():
+                if image_path.suffix not in [".jpg", ".png"]:
+                    continue
+                
+                # Run YOLO model on image
+                results = yolo_model(str(image_path), verbose=False)
+                # results = list(yolo_model(str(image_path), verbose=False, stream=True))
+                pred = results[0]
+
+                # Load the original image
+                image = cv2.imread(image_path) # type: ignore
+
+                # Create black and white image to save binary mask
+                binary_mask = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
+
+                # Save mask if YOLO model detected any bruises
+                if pred.masks is not None:
+
+                    # Extract the mask (pred.masks.data contains the binary masks)
+                    masks_list = pred.masks.data.cpu().numpy()  # Convert to numpy array if needed
+
+                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # Convert BGR (OpenCV) to RGB (matplotlib)
+
+                    # Iterate through each mask in masks list to combine into one mask file (if multiple bruises detected)
+                    for mask in masks_list:
+                        mask_resized = cv2.resize(mask, (image.shape[1], image.shape[0]))  # Ensure mask matches image size
+                        binary_mask[mask_resized > 0.5] = 255
+                    
+                    bruise_counter += 1
+
+                # Save combined binary mask
+                combined_mask_path = mask_dir / f"{image_path.stem}_bruise_mask.png"
+                cv2.imwrite(str(combined_mask_path), binary_mask)
+
         CONSOLE.log("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
+        CONSOLE.log("[bold green]:tada: :tada: :tada: YOLO masks successfully generated! :tada: :tada: :tada:")
+        CONSOLE.log(f"[bold blue]Found bruises in {bruise_counter} out of {num_extracted_frames} images") # type: ignore
 
         for summary in summary_log:
             CONSOLE.log(summary)
