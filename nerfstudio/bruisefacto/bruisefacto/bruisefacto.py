@@ -210,25 +210,29 @@ class BruisefactoModel(SplatfactoModel):
     
     def get_image_metrics_and_images(self, outputs: Dict[str, torch.Tensor], batch: Dict[str, Any]):
         """
-        Called by the pipeline for each image at eval time. We can add bruise IoU here.
+        Called by the pipeline for each image at eval time. 
         Returns:
             metrics_dict, images_dict
         """
         # -- 1) First let the base class fill out standard metrics & images (PSNR, depth, etc.)
         metrics_dict, images_dict = super().get_image_metrics_and_images(outputs, batch)
 
-        # -- 2) Add bruise iou if ground-truth is available
+        # -- 2) Add bruise metrics if bruise is in batch
         if "bruise" in outputs and "bruise_mask" in batch:
             pred_bruise = outputs["bruise"]   # shape [H, W] or [H, W, 1]
             gt_bruise   = batch["bruise_mask"] # shape [H, W] or [1, H, W], etc.
 
             if pred_bruise.shape[:2] != gt_bruise.shape[:2]:
-                gt_bruise = _resize_bruise_mask(gt_bruise, pred_bruise.shape[:2])
+                gt_bruise = resize_bruise_mask(gt_bruise, pred_bruise.shape[:2])
 
             iou_value = compute_bruise_iou(pred_bruise, gt_bruise)
             metrics_dict["bruise_iou"] = iou_value
 
-        return metrics_dict, images_dict
+            # Add PSNR for Bruise
+            bruise_psnr = compute_psnr(pred_bruise, gt_bruise)
+            metrics_dict["bruise_psnr"] = bruise_psnr
+            
+            return metrics_dict, images_dict
     
     def get_outputs(self, camera: Cameras) -> Dict[str, Union[torch.Tensor, List]]:
         """Takes in a camera and returns a dictionary of outputs.
@@ -399,7 +403,7 @@ class BruisefactoModel(SplatfactoModel):
             batch: ground truth batch corresponding to outputs
             metrics_dict: dictionary of metrics, some of which we can use for loss
         """
-
+        # import pdb; pdb.set_trace()
         # Compute loss for bruise parameter
         pred_bruise = outputs["bruise"]
 
@@ -684,7 +688,7 @@ def compute_bruise_iou(pred_mask: torch.Tensor, gt_mask: torch.Tensor, threshold
         threshold:  Pred values > threshold => 1, else 0
         """
         # Binarize predicted bruise:
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         pred_binary = (pred_mask > threshold).bool()
         # Ensure GT is also boolean:
         gt_binary = (gt_mask > 0.5).bool()  # or simply (gt_mask == 1) if you know it’s 0/1
@@ -697,7 +701,7 @@ def compute_bruise_iou(pred_mask: torch.Tensor, gt_mask: torch.Tensor, threshold
         else:
             return (intersection / union).item()
         
-def _resize_bruise_mask(
+def resize_bruise_mask(
     bruise_mask: torch.Tensor,
     target_shape: Tuple[int, int],
 ) -> torch.Tensor:
@@ -726,3 +730,31 @@ def _resize_bruise_mask(
     ).squeeze(0).permute(1, 2, 0)  # Convert back to [H, W, C]
 
     return resized_mask
+
+def compute_psnr(pred_mask: torch.Tensor, gt_mask: torch.Tensor) -> float:
+    """
+    Computes the Peak Signal-to-Noise Ratio (PSNR) between the predicted bruise mask and ground truth.
+
+    Args:
+        pred_mask (torch.Tensor): Predicted bruise mask (should be in range [0,1] after sigmoid).
+        gt_mask (torch.Tensor): Ground truth bruise mask (binary 0/1).
+    
+    Returns:
+        float: The PSNR value.
+    """
+    # Ensure masks are in [0,1]
+    pred_mask = torch.clamp(pred_mask, 0, 1)
+    gt_mask = torch.clamp(gt_mask, 0, 1)
+
+    # Compute Mean Squared Error (MSE)
+    mse = F.mse_loss(pred_mask, gt_mask)
+
+    # If MSE is 0, return a high PSNR value
+    if mse == 0:
+        return float("inf")  # Perfect match case
+
+    # Compute PSNR
+    max_val = 1.0  # Since our masks are in [0,1]
+    psnr = 10 * torch.log10(max_val**2 / mse)
+
+    return psnr.item()

@@ -126,9 +126,21 @@ class BruisefactoDatamanager(FullImageDatamanager):
         if self.config.data is None:
             raise ValueError("Config data path is None")
 
+        # import pdb; pdb.set_trace()
         yolo_masks_dir = Path(self.config.data) / "yolo_masks"  # Path to YOLO masks directory
-        mask_file_name = f"frame_{image_idx:05d}_bruise_mask.png"
-        mask_path = yolo_masks_dir / mask_file_name
+        gt_masks_dir = Path(self.config.data) / "gt_masks"      # Path to ground truth masks directory
+
+        # Check if the "gt_masks" directory exists
+        if gt_masks_dir.exists():
+            # Use masks from "gt_masks" directory
+            mask_dir = gt_masks_dir
+            mask_file_name = f"berry26_mov-{image_idx:04d}.png"
+        else:
+            # Use masks from "yolo_masks" directory
+            mask_dir = yolo_masks_dir
+            mask_file_name = f"frame_{image_idx:05d}_bruise_mask.png"
+
+        mask_path = mask_dir / mask_file_name
 
         if mask_path.exists():
             mask = Image.open(mask_path).convert("L")  # Convert mask to grayscale
@@ -136,7 +148,7 @@ class BruisefactoDatamanager(FullImageDatamanager):
             data[bruise_mask_key] = mask_tensor
         else:
             # Handle missing masks by creating an empty (zeroed) mask
-            print(f"Mask not found for: {mask_path}. Creating a default empty mask.")
+            # print(f"Mask not found for: {mask_path}. Creating a default empty mask.")
             empty_mask = torch.zeros((1, data["image"].shape[-2], data["image"].shape[-1]), device=self.device)
             data[bruise_mask_key] = empty_mask
 
