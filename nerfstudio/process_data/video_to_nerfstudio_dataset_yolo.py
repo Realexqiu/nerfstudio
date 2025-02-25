@@ -52,7 +52,7 @@ class VideoToNerfstudioDatasetYOLO(ColmapConverterToNerfstudioDataset):
     """Random seed to select video frames for eval set"""
 
     # Path to best weights for YOLO segmentation model
-    yolo_weights_path = Path(__file__).parent.parent / 'bruisefacto' / 'bruisefacto' / 'best.pt'
+    yolo_weights_path = Path(__file__).parent.parent / 'bruisefacto' / 'bruisefacto' / 'yolo_models_strawberry / 'P-0.873_R-0.817.pt'
 
     def main(self) -> None:
         """Process video into a nerfstudio dataset."""

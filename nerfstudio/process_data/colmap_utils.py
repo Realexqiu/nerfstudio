@@ -115,8 +115,8 @@ def run_colmap(
     """
 
     colmap_version = get_colmap_version(colmap_cmd)
-    print("Running COLMAP version", colmap_version)
-    print("Running run_colmap function in colmap_utils.py")
+    # print("Running COLMAP version", colmap_version)
+    # print("Running run_colmap function in colmap_utils.py")
     verbose = False # False if you don't want continuous output in terminal
     colmap_database_path = colmap_dir / "database.db"
     colmap_database_path.unlink(missing_ok=True)
@@ -437,7 +437,7 @@ def colmap_to_json(
     im_id_to_image = read_images_binary(recon_dir / "images.bin")
     if set(cam_id_to_camera.keys()) != {1}:
         CONSOLE.print(f"[bold yellow]Warning: More than one camera is found in {recon_dir}")
-        print(cam_id_to_camera)
+        # print(cam_id_to_camera)
         use_single_camera_mode = False  # update bool: one camera per frame
         out = {}  # out = {"camera_model": parse_colmap_camera_params(cam_id_to_camera[1])["camera_model"]}
     else:  # one camera for all frames

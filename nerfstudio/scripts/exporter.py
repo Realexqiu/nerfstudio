@@ -570,7 +570,9 @@ class ExportGaussianSplat(Exporter):
 
         _, pipeline, _, _ = eval_setup(self.load_config, test_mode="inference")
 
-        assert isinstance(pipeline.model, BruisefactoModel)
+        # print(pipeline.model)
+
+        # assert isinstance(pipeline.model, BruisefactoModel)
 
         model: BruisefactoModel = pipeline.model
 

@@ -193,4 +193,4 @@ camera_paths/
 /third_party
 
 # Ignore these files
-/nerfstudio/bruisefacto/bruisefacto/best.pt
+nerfstudio/bruisefacto/bruisefacto/yolo_models_strawberry/
