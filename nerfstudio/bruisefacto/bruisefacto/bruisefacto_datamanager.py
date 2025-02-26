@@ -30,26 +30,41 @@ class MyEvalDataset(Dataset):
     def __getitem__(self, index):
         """
         Return (camera, batch) for the eval image at 'index'.
-        Reuse logic from your 'next_eval_image()' or do something similar.
-        """
+        """ 
         # 1) We'll do something similar to your 'next_eval_image'
         data = self.datamanager.cached_eval[index].copy()
         data["image"] = data["image"].to(self.datamanager.device)
 
         camera = self.datamanager.eval_dataset.cameras[index : index+1].to(self.datamanager.device)
 
-        # 2) Attach bruise mask from disk
-        yolo_masks_dir = Path(self.datamanager.config.data) / "yolo_masks"
-        mask_file_name = f"frame_{index:05d}_bruise_mask.png"
-        mask_path = yolo_masks_dir / mask_file_name
+        # Load bruise and strawberry mask paths
+        yolo_masks_dir = Path(self.config.data) / "yolo_masks"
+        yolo_mask_file_name = f"frame_{index:05d}_bruise_mask.png"
+        yolo_mask_path = yolo_masks_dir / yolo_mask_file_name
 
-        if mask_path.exists():
-            mask_img = Image.open(mask_path).convert("L")
-            bruise_mask = transforms.ToTensor()(mask_img).to(self.datamanager.device)
+        strawbery_masks_dir = Path(self.config.data) / "grounded_sam2_masks"
+        strawberry_mask_file_name = f"frame_{index:05d}_strawberry_mask.png"
+        strawberry_mask_path = strawbery_masks_dir / strawberry_mask_file_name
+
+        # If bruise mask path exists save mask as tensor and add to data batch
+        if yolo_mask_path.exists():
+            yolo_mask = Image.open(yolo_mask_path).convert("L")  # Convert mask to grayscale
+            yolo_mask_tensor = transforms.ToTensor()(yolo_mask).to(self.device)
+            data[self.config.bruise_mask_key] = yolo_mask_tensor
         else:
-            c, h, w = data["image"].shape
-            bruise_mask = torch.zeros((1, h, w), device=self.datamanager.device)
-        data[self.datamanager.config.bruise_mask_key] = bruise_mask
+            # Handle missing masks by creating an empty (zeroed) mask
+            empty_mask = torch.zeros((1, data["image"].shape[-2], data["image"].shape[-1]), device=self.device)
+            data[self.config.bruise_mask_key] = empty_mask
+
+        # If strawberry mask path exists save mask as tensor and add to data batch
+        if strawberry_mask_path.exists():
+            strawberry_mask = Image.open(strawberry_mask_path).convert("L")  # Convert mask to grayscale
+            strawberry_mask_tensor = transforms.ToTensor()(strawberry_mask).to(self.device)
+            data[self.config.strawberry_mask_key] = strawberry_mask_tensor
+        else:
+            # Handle missing masks by creating an empty (zeroed) mask
+            empty_mask = torch.zeros((1, data["image"].shape[-2], data["image"].shape[-1]), device=self.device)
+            data[self.config.strawberry_mask_key] = empty_mask
 
         return camera, data
     
@@ -60,6 +75,7 @@ class BruisefactoDatamanagerConfig(FullImageDatamanagerConfig):
     Add your custom datamanager config parameters here.
     """
     bruise_mask_key: str = "bruise_mask" # Key to use for yolo mask in batch
+    strawberry_mask_key: str = "strawberry_mask" # Key to use for strawberry mask in batch
 
     _target: Type = field(default_factory=lambda: BruisefactoDatamanager)
 
@@ -71,37 +87,30 @@ class BruisefactoDatamanager(FullImageDatamanager):
         config: the DataManagerConfig used to instantiate class
     """
 
-    config: BruisefactoDatamanagerConfig
+    config: BruisefactoDatamanagerConfig # type: ignore
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         # 3) Create a dataset object
-        self.eval_dataset_for_loader = MyEvalDataset(self)
+        self.eval_loader = MyEvalDataset(self)
         
         # 4) Wrap it in a data loader (batch_size=1, no shuffle)
 
-
-        self._fixed_indices_eval_dataloader = DataLoader(
-            self.eval_dataset_for_loader,
-            batch_size=1,
-            shuffle=False,
-            collate_fn=single_item_collate_fn,
-        )
+        self.fixed_ind_eval_loader = DataLoader(self.eval_loader, batch_size=1, shuffle=False, collate_fn=single_item_collate_fn)
     
         # self.train_unseen_cameras = self.sample_train_cameras
 
     @property
     def fixed_indices_eval_dataloader(self):
         """Read-only property that returns our private loader."""
-        return self._fixed_indices_eval_dataloader
+        return self.fixed_ind_eval_loader
 
     def next_train(self, step: int) -> Tuple[Cameras, Dict]:
         """Returns the next training batch with YOLO bruise masks.
 
         Returns a Camera instead of RayBundle for consistency with splatfacto.
         """
-
         # Pop the next unseen camera index
         image_idx = self.train_unseen_cameras.pop(0)
         # Re-populate the unseen cameras list if exhausted
@@ -120,39 +129,37 @@ class BruisefactoDatamanager(FullImageDatamanager):
             camera.metadata = {}
         camera.metadata["cam_idx"] = image_idx
 
-        # Add YOLO bruise mask to the data
-        bruise_mask_key = self.config.bruise_mask_key  # Key for the mask in the batch
-
         if self.config.data is None:
             raise ValueError("Config data path is None")
 
-        # import pdb; pdb.set_trace()
-        yolo_masks_dir = Path(self.config.data) / "yolo_masks"  # Path to YOLO masks directory
-        gt_masks_dir = Path(self.config.data) / "gt_masks"      # Path to ground truth masks directory
+        # Load bruise and strawberry mask paths
+        yolo_masks_dir = Path(self.config.data) / "yolo_masks"  
+        yolo_mask_file_name = f"frame_{image_idx:05d}_bruise_mask.png"
+        yolo_mask_path = yolo_masks_dir / yolo_mask_file_name
 
-        # Check if the "gt_masks" directory exists
-        if gt_masks_dir.exists():
-            # Use masks from "gt_masks" directory
-            mask_dir = gt_masks_dir
-            mask_file_name = f"berry26_mov-{image_idx:04d}.png"
-        else:
-            # Use masks from "yolo_masks" directory
-            mask_dir = yolo_masks_dir
-            mask_file_name = f"frame_{image_idx:05d}_bruise_mask.png"
+        strawbery_masks_dir = Path(self.config.data) / "grounded_sam2_masks"
+        strawberry_mask_file_name = f"frame_{image_idx:05d}_strawberry_mask.png"
+        strawberry_mask_path = strawbery_masks_dir / strawberry_mask_file_name
 
-        mask_path = mask_dir / mask_file_name
-
-        if mask_path.exists():
-            mask = Image.open(mask_path).convert("L")  # Convert mask to grayscale
-            mask_tensor = transforms.ToTensor()(mask).to(self.device)
-            data[bruise_mask_key] = mask_tensor
+        # If bruise mask path exists save mask as tensor and add to data batch
+        if yolo_mask_path.exists():
+            yolo_mask = Image.open(yolo_mask_path).convert("L")  # Convert mask to grayscale
+            yolo_mask_tensor = transforms.ToTensor()(yolo_mask).to(self.device)
+            data[self.config.bruise_mask_key] = yolo_mask_tensor
         else:
             # Handle missing masks by creating an empty (zeroed) mask
-            # print(f"Mask not found for: {mask_path}. Creating a default empty mask.")
             empty_mask = torch.zeros((1, data["image"].shape[-2], data["image"].shape[-1]), device=self.device)
-            data[bruise_mask_key] = empty_mask
+            data[self.config.bruise_mask_key] = empty_mask
 
-        # import pdb; pdb.set_trace()  # Debugging breakpoint
+        # If strawberry mask path exists save mask as tensor and add to data batch
+        if strawberry_mask_path.exists():
+            strawberry_mask = Image.open(strawberry_mask_path).convert("L")  # Convert mask to grayscale
+            strawberry_mask_tensor = transforms.ToTensor()(strawberry_mask).to(self.device)
+            data[self.config.strawberry_mask_key] = strawberry_mask_tensor
+        else:
+            # Handle missing masks by creating an empty (zeroed) mask
+            empty_mask = torch.zeros((1, data["image"].shape[-2], data["image"].shape[-1]), device=self.device)
+            data[self.config.strawberry_mask_key] = empty_mask
 
         return camera, data
 
@@ -164,7 +171,7 @@ class BruisefactoDatamanager(FullImageDatamanager):
         if len(self.eval_unseen_cameras) == 0:
             self.eval_unseen_cameras = [i for i in range(len(self.eval_dataset))]
 
-        # 2) Retrieve the camera + data from cache
+        # Retrieve the camera + data from cache
         data = self.cached_eval[image_idx]
         data = data.copy()  # avoid mutating the cache
         data["image"] = data["image"].to(self.device)
@@ -172,22 +179,34 @@ class BruisefactoDatamanager(FullImageDatamanager):
         assert len(self.eval_dataset.cameras.shape) == 1, "Assumes single batch dimension."
         camera = self.eval_dataset.cameras[image_idx : image_idx + 1].to(self.device)
 
-        # 3) Load bruise mask from disk (similar to how you do in next_train)
+        # Load bruise and strawberry mask paths
         yolo_masks_dir = Path(self.config.data) / "yolo_masks"
-        mask_file_name = f"frame_{image_idx:05d}_bruise_mask.png"
-        mask_path = yolo_masks_dir / mask_file_name
+        yolo_mask_file_name = f"frame_{image_idx:05d}_bruise_mask.png"
+        yolo_mask_path = yolo_masks_dir / yolo_mask_file_name
 
-        if mask_path.exists():
-            mask_img = Image.open(mask_path).convert("L")
-            bruise_mask = transforms.ToTensor()(mask_img).to(self.device)  # shape [1, H, W]
+        strawbery_masks_dir = Path(self.config.data) / "grounded_sam2_masks"
+        strawberry_mask_file_name = f"frame_{image_idx:05d}_strawberry_mask.png"
+        strawberry_mask_path = strawbery_masks_dir / strawberry_mask_file_name
+
+        # If bruise mask path exists save mask as tensor and add to data batch
+        if yolo_mask_path.exists():
+            yolo_mask = Image.open(yolo_mask_path).convert("L")  # Convert mask to grayscale
+            yolo_mask_tensor = transforms.ToTensor()(yolo_mask).to(self.device)
+            data[self.config.bruise_mask_key] = yolo_mask_tensor
         else:
-            # If not found, build an empty mask
-            print(f"[Eval] Mask not found for {mask_path}, using an empty mask.")
+            # Handle missing masks by creating an empty (zeroed) mask
             empty_mask = torch.zeros((1, data["image"].shape[-2], data["image"].shape[-1]), device=self.device)
             data[self.config.bruise_mask_key] = empty_mask
 
-        data["bruise_mask"] = bruise_mask
-        print("bruisefacto_datamanager.py: next_eval_image() called")
+        # If strawberry mask path exists save mask as tensor and add to data batch
+        if strawberry_mask_path.exists():
+            strawberry_mask = Image.open(strawberry_mask_path).convert("L")  # Convert mask to grayscale
+            strawberry_mask_tensor = transforms.ToTensor()(strawberry_mask).to(self.device)
+            data[self.config.strawberry_mask_key] = strawberry_mask_tensor
+        else:
+            # Handle missing masks by creating an empty (zeroed) mask
+            empty_mask = torch.zeros((1, data["image"].shape[-2], data["image"].shape[-1]), device=self.device)
+            data[self.config.strawberry_mask_key] = empty_mask
 
         return camera, data
     

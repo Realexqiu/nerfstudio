@@ -114,7 +114,7 @@ def run_colmap(
         colmap_cmd: Path to the COLMAP executable.
     """
 
-    colmap_version = get_colmap_version(colmap_cmd)
+    # colmap_version = get_colmap_version(colmap_cmd)
     # print("Running COLMAP version", colmap_version)
     # print("Running run_colmap function in colmap_utils.py")
     verbose = False # False if you don't want continuous output in terminal
@@ -128,9 +128,10 @@ def run_colmap(
         f"--image_path {image_dir}",
         f"--SiftExtraction.estimate_affine_shape=true",
         f"--SiftExtraction.domain_size_pooling=true",
-        # "--ImageReader.single_camera 1", ## commented out by Alex Qiu
+        # "--ImageReader.single_camera 1", 
         # f"--ImageReader.camera_model {camera_model.value}",
         # f"--SiftExtraction.use_gpu {int(gpu)}",
+        f"--SiftExtraction.use_gpu 0",
     ]
     if camera_mask_path is not None:
         feature_extractor_cmd.append(f"--ImageReader.camera_mask_path {camera_mask_path}")
@@ -140,7 +141,7 @@ def run_colmap(
 
     CONSOLE.log("[bold green]:tada: Done extracting COLMAP features.")
 
-    # Exhaustive matching ADDED BY ALEX QIU (Using exhaustive matching instead of feature matching seems to allow for colmap to be more successful)
+    # Exhaustive matching (Using exhaustive matching instead of feature matching seems to allow for colmap to be more successful)
     exhaustive_matcher_cmd = [
         f"{colmap_cmd} exhaustive_matcher",
         f"--database_path {colmap_dir / 'database.db'}",
@@ -151,8 +152,6 @@ def run_colmap(
         run_command(exhaustive_matcher_cmd, verbose=verbose)
 
     CONSOLE.log("[bold green]:tada: Done running COLMAP exhaustive matcher.")
-
-    ## END OF EDITS BY ALEX QIU
 
     # # Feature matching
     # feature_matcher_cmd = [

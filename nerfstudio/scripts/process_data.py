@@ -36,8 +36,18 @@ from nerfstudio.process_data import (
 from nerfstudio.process_data.colmap_converter_to_nerfstudio_dataset import BaseConverterToNerfstudioDataset
 from nerfstudio.process_data.images_to_nerfstudio_dataset import ImagesToNerfstudioDataset
 from nerfstudio.process_data.video_to_nerfstudio_dataset import VideoToNerfstudioDataset
-from nerfstudio.process_data.video_to_nerfstudio_dataset_yolo import VideoToNerfstudioDatasetYOLO
 from nerfstudio.utils.rich_utils import CONSOLE
+
+try:
+    from nerfstudio.process_data.video_to_nerfstudio_dataset_bruisefacto import VideoToNerfstudioDatasetBruisefacto
+    have_sam2 = True
+except ImportError:
+    have_sam2 = False
+    class VideoToNerfstudioDatasetBruisefacto:
+        """Not installed"""
+        def main(self):
+            raise ImportError("Bruisefacto subcommand requires the `sam2` library. Please install sam2 if you want to use it.")
+
 
 
 @dataclass
@@ -513,7 +523,6 @@ class NotInstalled:
 Commands = Union[
     Annotated[ImagesToNerfstudioDataset, tyro.conf.subcommand(name="images")],
     Annotated[VideoToNerfstudioDataset, tyro.conf.subcommand(name="video")],
-    Annotated[VideoToNerfstudioDatasetYOLO, tyro.conf.subcommand(name="video-yolo")],
     Annotated[ProcessPolycam, tyro.conf.subcommand(name="polycam")],
     Annotated[ProcessMetashape, tyro.conf.subcommand(name="metashape")],
     Annotated[ProcessRealityCapture, tyro.conf.subcommand(name="realitycapture")],
@@ -543,6 +552,18 @@ else:
             ),
         ],
     ]
+
+if have_sam2:
+    Commands = Union[
+        Commands,
+        Annotated[
+            VideoToNerfstudioDatasetBruisefacto,
+            tyro.conf.subcommand(name="video-bruisefacto")
+        ]
+    ]
+else:
+    # Provide a dummy or skip it
+    pass
 
 
 def entrypoint():

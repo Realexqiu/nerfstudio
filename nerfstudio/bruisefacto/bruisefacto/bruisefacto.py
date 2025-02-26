@@ -34,9 +34,6 @@ class BruisefactoModelConfig(SplatfactoModelConfig):
 
     Add your custom model config parameters here.
     """
-
-    """If True, compute the Gaussians based on bruise mask"""
-    learn_bruise_mask: bool = True
     
     _target: Type = field(default_factory=lambda: BruisefactoModel) 
 
@@ -49,6 +46,10 @@ class BruisefactoModel(SplatfactoModel):
     @property
     def bruise(self):
         return self.gauss_params["bruise"]
+    
+    @property
+    def strawberry(self):
+        return self.gauss_params["strawberry"]
 
     def get_gaussian_param_groups(self) -> Dict[str, List[Parameter]]:
         # Here we explicitly use the means, scales as parameters so that the user can override this function and
@@ -57,20 +58,18 @@ class BruisefactoModel(SplatfactoModel):
             name: [self.gauss_params[name]]
             for name in ["means", "scales", "quats", "features_dc", "features_rest", "opacities"]
         }
-        if self.config.learn_bruise_mask:
-            param_groups["bruise"] = [self.gauss_params["bruise"]]
+        param_groups["bruise"] = [self.gauss_params["bruise"]]
+        param_groups["strawberry"] = [self.gauss_params["strawberry"]]
         return param_groups
 
     def load_state_dict(self, dict, **kwargs):  # type: ignore
         # resize the parameters to match the new number of points
         self.step = 30000
         if "means" in dict:
-            # For backwards compatibility, we remap the names of parameters from
-            # means->gauss_params.means since old checkpoints have that format
+            # For backwards compatibility, remap names of parameters from means->gauss_params.means for old checkpoints
             param_list = ["means", "scales", "quats", "features_dc", "features_rest", "opacities"]
-
-            if self.config.learn_bruise_mask: 
-                param_list.append("bruise")
+            param_list.append("bruise")
+            param_list.append("strawberry")
 
             for p in param_list:
                 dict[f"gauss_params.{p}"] = dict[p]
@@ -97,9 +96,9 @@ class BruisefactoModel(SplatfactoModel):
         quats = torch.nn.Parameter(random_quat_tensor(num_points))
         dim_sh = num_sh_bases(self.config.sh_degree)
 
-        if self.config.learn_bruise_mask:
-            #randomly initialize bruise 
-            bruise = torch.nn.Parameter(torch.rand(means.shape[0], 1))
+        # Randomly initialize strawberry and bruise masks
+        bruise = torch.nn.Parameter(torch.rand(means.shape[0], 1))
+        strawberry = torch.nn.Parameter(torch.rand(means.shape[0], 1))
 
         # We can have colors without points.
         if (self.seed_points is not None and not self.config.random_init and self.seed_points[1].shape[0] > 0):
@@ -117,29 +116,16 @@ class BruisefactoModel(SplatfactoModel):
             features_rest = torch.nn.Parameter(torch.zeros((num_points, dim_sh - 1, 3)))
 
         opacities = torch.nn.Parameter(torch.logit(0.1 * torch.ones(num_points, 1)))
-        if self.config.learn_bruise_mask:
-            self.gauss_params = torch.nn.ParameterDict(
-            {
-                "means": means,
-                "scales": scales,
-                "quats": quats,
-                "features_dc": features_dc,
-                "features_rest": features_rest,
-                "opacities": opacities,
-                "bruise": bruise, # type: ignore
-            }
-            )
-        else:
-            self.gauss_params = torch.nn.ParameterDict(
-            {
-                "means": means,
-                "scales": scales,
-                "quats": quats,
-                "features_dc": features_dc,
-                "features_rest": features_rest,
-                "opacities": opacities,
-            }
-            )
+        self.gauss_params = torch.nn.ParameterDict({
+            "means": means,
+            "scales": scales,
+            "quats": quats,
+            "features_dc": features_dc,
+            "features_rest": features_rest,
+            "opacities": opacities,
+            "bruise": bruise, # type: ignore
+            "strawberry": strawberry # type: ignore
+        })
 
         self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
             num_cameras=self.num_train_data, device="cpu"
@@ -189,7 +175,6 @@ class BruisefactoModel(SplatfactoModel):
         )
         self.strategy_state = self.strategy.initialize_state(scene_scale=1.0)
 
-
     def get_background(self):
         # get the background color
         if self.training:
@@ -231,6 +216,13 @@ class BruisefactoModel(SplatfactoModel):
             # Add PSNR for Bruise
             bruise_psnr = compute_psnr(pred_bruise, gt_bruise)
             metrics_dict["bruise_psnr"] = bruise_psnr
+
+        if "strawberry" in outputs and "strawberry_mask" in batch:
+            pred_strawberry = outputs["strawberry"]   # shape [H, W] or [H, W, 1]
+            gt_strawberry   = batch["strawberry_mask"] # shape [H, W] or [1, H, W], etc.
+
+            if pred_strawberry.shape[:2] != gt_strawberry.shape[:2]:
+                gt_strawberry = resize_bruise_mask(gt_strawberry, pred_strawberry.shape[:2])
             
             return metrics_dict, images_dict
     
@@ -272,6 +264,7 @@ class BruisefactoModel(SplatfactoModel):
             scales_crop = self.scales[crop_ids]
             quats_crop = self.quats[crop_ids]
             bruise_crop = self.bruise[crop_ids]
+            strawberry_crop = self.strawberry[crop_ids]
         else:
             opacities_crop = self.opacities
             means_crop = self.means
@@ -280,6 +273,7 @@ class BruisefactoModel(SplatfactoModel):
             scales_crop = self.scales
             quats_crop = self.quats
             bruise_crop = self.bruise
+            strawberry_crop = self.strawberry
 
         colors_crop = torch.cat((features_dc_crop[:, None, :], features_rest_crop), dim=1)
 
@@ -328,9 +322,8 @@ class BruisefactoModel(SplatfactoModel):
             # radius_clip=3.0,
         )
 
-        # Perform mask rendering
-        # if self.config.learn_bruise_mask:
-        mask, _, _ = rasterization(
+        # Perform bruise mask rendering
+        bruise_mask, _, _ = rasterization(
             means=means_crop,
             quats=quats_crop,
             scales=torch.exp(scales_crop),
@@ -350,7 +343,30 @@ class BruisefactoModel(SplatfactoModel):
             absgrad=self.strategy.absgrad,
             rasterize_mode=self.config.rasterize_mode,
         )
-        mask = mask[..., 0:1]  # Use the first channel for the mask
+        bruise_mask = bruise_mask[..., 0:1]  # Use the first channel for the mask
+
+        # Perform strawberry mask rendering
+        strawberry_mask, _, _ = rasterization(
+            means=means_crop,
+            quats=quats_crop,
+            scales=torch.exp(scales_crop),
+            opacities=torch.sigmoid(opacities_crop).squeeze(-1),
+            # replace colors with 3x strawberry_crop
+            colors = repeat(strawberry_crop, 'n 1 -> n 1 3'),
+            viewmats=viewmat,  # [1, 4, 4]
+            Ks=K,  # [1, 3, 3]
+            width=W,
+            height=H,
+            packed=False,
+            near_plane=0.01,
+            far_plane=1e10,
+            render_mode=render_mode,
+            sh_degree=0,
+            sparse_grad=False,
+            absgrad=self.strategy.absgrad,
+            rasterize_mode=self.config.rasterize_mode,
+        )
+        strawberry_mask = strawberry_mask[..., 0:1]  # Use the first channel for the mask
 
         if self.training:
             self.strategy.step_pre_backward(
@@ -376,19 +392,16 @@ class BruisefactoModel(SplatfactoModel):
         if background.shape[0] == 3 and not self.training:
             background = background.expand(H, W, 3)
 
-        # let's add a new ouput which combines RGB with bruise mask
-        # we can color the bruise mask with red color at alpha .5 
-        # and overlay it on the RGB image
-
+        # Add overlay output for visualizing bruise mask in splat
         bruise_color = torch.tensor([0.5, 0.0, 0.5], device=rgb.device, dtype=rgb.dtype)  # purple
-        bruise_overlay = mask.squeeze(0).expand(-1, -1, 3) * bruise_color  # [H, W, 3]
+        bruise_overlay = bruise_mask.squeeze(0).expand(-1, -1, 3) * bruise_color  # [H, W, 3]
         alpha_overlay = 0.7
         rgb_with_bruise = alpha_overlay * bruise_overlay + (1 - alpha_overlay) * rgb.squeeze(0)  # [H, W, 3]
 
-
         return {
             "rgb": rgb.squeeze(0),  # type: ignore
-            "bruise": mask.squeeze(0),  # type: ignore
+            "bruise": bruise_mask.squeeze(0),  # type: ignore
+            "strawberry": strawberry_mask.squeeze(0),
             "rgb_with_bruise": rgb_with_bruise,  # type: ignores
             "depth": depth_im,  # type: ignore
             "accumulation": alpha.squeeze(0),  # type: ignore
@@ -403,19 +416,31 @@ class BruisefactoModel(SplatfactoModel):
             batch: ground truth batch corresponding to outputs
             metrics_dict: dictionary of metrics, some of which we can use for loss
         """
-        # import pdb; pdb.set_trace()
         # Compute loss for bruise parameter
         pred_bruise = outputs["bruise"]
 
         if "bruise_mask" in batch:
             # batch["bruise_mask"] : [H, W, 1]        
-            mask = _downscale_mask_to_pred_shape(batch["bruise_mask"], pred_bruise).to(self.device)
+            bruise_mask = downscale_mask_to_pred_shape(batch["bruise_mask"], pred_bruise).to(self.device)
 
             # compute binary cross entropy loss
-            mask_loss = F.binary_cross_entropy_with_logits(pred_bruise, mask)
+            bruise_mask_loss = F.binary_cross_entropy_with_logits(pred_bruise, bruise_mask)
             
         else:
-            mask_loss = torch.tensor(0.0).to(self.device)  
+            bruise_mask_loss = torch.tensor(0.0).to(self.device)
+
+        # Compute loss for strawberry parameter
+        pred_strawberry = outputs["strawberry"]
+
+        if "strawberry_mask" in batch:
+            # batch["strawberry_mask"] : [H, W, 1]        
+            strawberry_mask = downscale_mask_to_pred_shape(batch["strawberry_mask"], pred_strawberry).to(self.device)
+
+            # compute binary cross entropy loss
+            strawberry_mask_loss = F.binary_cross_entropy_with_logits(pred_strawberry, strawberry_mask)
+            
+        else:
+            strawberry_mask_loss = torch.tensor(0.0).to(self.device)
         
         # Compute loss for RGB image
         gt_img = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
@@ -438,7 +463,7 @@ class BruisefactoModel(SplatfactoModel):
 
         # Create loss dictionary
         loss_dict = {
-            "main_loss": (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss + mask_loss,
+            "main_loss": (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss + bruise_mask_loss + strawberry_mask_loss,
             "scale_reg": scale_reg,
         }
 
@@ -490,14 +515,13 @@ def SH2RGB(sh):
     C0 = 0.28209479177387814
     return sh * C0 + 0.5
 
-def _resize_to(image: torch.Tensor, target_hw: Tuple[int, int]) -> torch.Tensor:
+def resize_to(image: torch.Tensor, target_hw: Tuple[int, int]) -> torch.Tensor:
     """
     Safely resize `image` to shape [target_h, target_w, C] using area downscaling.
     Input can be [H, W, C], [C, H, W], or [1, H, W]. We unify to [B=1, C, H, W],
     call F.interpolate(..., size=(target_h, target_w), mode='area'), and return [target_h, target_w, C].
     """
-    # 1) Ensure we have a final dimension 'C'
-    #    Commonly, the mask is [1, H, W]. If so, move it to [H, W, 1].
+    # 1) Ensure we have a final dimension 'C'. Commonly, the mask is [1, H, W]. If so, move it to [H, W, 1].
     if image.dim() == 3:
         # possible shapes to handle: [H, W, C], [C, H, W], [1, H, W], etc.
         if image.shape[0] == 1:
@@ -509,7 +533,6 @@ def _resize_to(image: torch.Tensor, target_hw: Tuple[int, int]) -> torch.Tensor:
         elif image.shape[0] in [1, 3] and image.shape[-1] not in [1, 3]:
             # shape is [C, H, W] => [H, W, C]
             image = image.permute(1, 2, 0)
-        # else shape is [H, W, C], which is already fine
     else:
         raise ValueError(f"Expected 3D tensor, got shape {image.shape}")
 
@@ -522,29 +545,20 @@ def _resize_to(image: torch.Tensor, target_hw: Tuple[int, int]) -> torch.Tensor:
 
     # 3) Expand to [B, C, H, W], use F.interpolate with mode='area'
     image_4d = image.permute(2, 0, 1).unsqueeze(0)  # => [1, C, H, W]
-    image_resized = F.interpolate(
-        image_4d, 
-        size=(target_h, target_w), 
-        mode="area",
-        align_corners=None  # not used by area mode, but safer to specify
-    )
+    image_resized = F.interpolate(image_4d, size=(target_h, target_w), mode="area", align_corners=None)
+
     # 4) Squeeze back to [target_h, target_w, C]
     image_out = image_resized.squeeze(0).permute(1, 2, 0)  # => [H, W, C]
     return image_out
 
-
-def _downscale_mask_to_pred_shape(
-    mask: torch.Tensor, 
-    pred_bruise: torch.Tensor
-) -> torch.Tensor:
+def downscale_mask_to_pred_shape(mask: torch.Tensor, pred_mask: torch.Tensor) -> torch.Tensor:
     """
-    Downscale `mask` so it exactly matches the shape of `pred_bruise`.
-    Ensures final shape is pred_bruise.shape[:2] + (mask_channels).
+    Downscale 'mask' so it exactly matches the shape of 'pred_mask'.
+    Ensures final shape is pred_mask.shape[:2] + (mask_channels).
     """
-    # pred_bruise is [H, W, 1], so we want the same H, W
-    target_hw = pred_bruise.shape[:2]
-    mask_resized = _resize_to(mask, target_hw) # type: ignore
-    return mask_resized
+    # pred_mask is [H, W, 1], so we want the same H, W
+    target_hw = pred_mask.shape[:2]
+    return resize_to(mask, target_hw)
 
 def pcd_to_normal(xyz: Tensor):
         hd, wd, _ = xyz.shape
@@ -639,11 +653,7 @@ def get_means3d_backproj(
 
         image_coords = get_camera_coords(img_size)
         image_coords = image_coords.to(device)  # note image_coords is (H,W)
-
-        # TODO: account for skew / radial distortion
-        means3d = torch.empty(
-            size=(img_size[0], img_size[1], 3), dtype=torch.float32, device=device
-        ).view(-1, 3)
+        means3d = torch.empty(size=(img_size[0], img_size[1], 3), dtype=torch.float32, device=device).view(-1, 3)
         means3d[:, 0] = (image_coords[:, 0] - cx) * depths[:, 0] / fx  # x
         means3d[:, 1] = (image_coords[:, 1] - cy) * depths[:, 0] / fy  # y
         means3d[:, 2] = depths[:, 0]  # z
@@ -688,25 +698,23 @@ def compute_bruise_iou(pred_mask: torch.Tensor, gt_mask: torch.Tensor, threshold
         threshold:  Pred values > threshold => 1, else 0
         """
         # Binarize predicted bruise:
-        # import pdb; pdb.set_trace()
         pred_binary = (pred_mask > threshold).bool()
+
         # Ensure GT is also boolean:
         gt_binary = (gt_mask > 0.5).bool()  # or simply (gt_mask == 1) if you know it’s 0/1
 
         intersection = (pred_binary & gt_binary).sum().float()
-        union        = (pred_binary | gt_binary).sum().float()
+        union = (pred_binary | gt_binary).sum().float()
+
         if union == 0:
             # Edge case: if both are completely empty, define IoU = 1.0 or 0.0 as you prefer
             return 1.0 if intersection == 0 else 0.0
         else:
             return (intersection / union).item()
         
-def resize_bruise_mask(
-    bruise_mask: torch.Tensor,
-    target_shape: Tuple[int, int],
-) -> torch.Tensor:
+def resize_bruise_mask(bruise_mask: torch.Tensor, shape_des: Tuple[int, int]) -> torch.Tensor:
     """
-    Resizes the `bruise_mask` tensor to match the `target_shape`.
+    Resizes the 'bruise_mask' tensor to match the 'target_shape'.
     Ensures compatibility with tensors having additional dimensions (e.g., [H, W, C] or [1, H, W]).
 
     Args:
@@ -716,28 +724,23 @@ def resize_bruise_mask(
     Returns:
         torch.Tensor: Resized bruise mask with shape [H, W, C].
     """
-    # Ensure `bruise_mask` has 3 dimensions (e.g., [H, W, C] or [1, H, W])
+    # Ensure 'bruise_mask' has 3 dimensions (e.g., [H, W, C] or [1, H, W])
     if bruise_mask.dim() == 2:  # If [H, W], add a channel dimension
         bruise_mask = bruise_mask.unsqueeze(-1)
     elif bruise_mask.dim() == 3 and bruise_mask.shape[0] == 1:  # If [1, H, W], permute to [H, W, 1]
         bruise_mask = bruise_mask.permute(1, 2, 0)
 
-    # Resize using area interpolation
-    resized_mask = F.interpolate(
-        bruise_mask.permute(2, 0, 1).unsqueeze(0),  # Convert to [1, C, H, W]
-        size=target_shape,  # Target (H, W)
-        mode="area",
-    ).squeeze(0).permute(1, 2, 0)  # Convert back to [H, W, C]
-
-    return resized_mask
+    # Resize using area interpolation. Convert to [1, C, H, W]. Target (H, W), then convert back to [H, W, C]
+    resized = F.interpolate(bruise_mask.permute(2, 0, 1).unsqueeze(0), shape_des, mode="area",).squeeze(0).permute(1, 2, 0)
+    return resized
 
 def compute_psnr(pred_mask: torch.Tensor, gt_mask: torch.Tensor) -> float:
     """
-    Computes the Peak Signal-to-Noise Ratio (PSNR) between the predicted bruise mask and ground truth.
+    Computes the Peak Signal-to-Noise Ratio (PSNR) between the predicted mask and ground truth.
 
     Args:
-        pred_mask (torch.Tensor): Predicted bruise mask (should be in range [0,1] after sigmoid).
-        gt_mask (torch.Tensor): Ground truth bruise mask (binary 0/1).
+        pred_mask (torch.Tensor): Predicted mask (should be in range [0,1] after sigmoid).
+        gt_mask (torch.Tensor): Ground truth mask (binary 0/1).
     
     Returns:
         float: The PSNR value.

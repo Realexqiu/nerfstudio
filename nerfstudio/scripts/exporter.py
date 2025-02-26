@@ -494,7 +494,7 @@ class ExportGaussianSplat(Exporter):
     Export 3D Gaussian Splatting model to a .ply
     """
 
-    output_filename: str = "splat.ply"
+    output_filename: str
     """Name of the output file."""
     obb_center: Optional[Tuple[float, float, float]] = None
     """Center of the oriented bounding box."""
@@ -505,8 +505,6 @@ class ExportGaussianSplat(Exporter):
     ply_color_mode: Literal["sh_coeffs", "rgb"] = "sh_coeffs"
     """If "rgb", export colors as red/green/blue fields. Otherwise, export colors as
     spherical harmonics coefficients."""
-
-    include_bruise = True
 
     @staticmethod
     def write_ply(
@@ -579,7 +577,6 @@ class ExportGaussianSplat(Exporter):
         filename = self.output_dir / self.output_filename
 
         map_to_tensors = OrderedDict()
-
 
         with torch.no_grad():
             positions = model.means.cpu().numpy()
