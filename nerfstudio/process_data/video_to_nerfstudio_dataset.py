@@ -48,7 +48,6 @@ class VideoToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
 
     def main(self) -> None:
         """Process video into a nerfstudio dataset."""
-        print("Running video_to_nerfstudio_dataset.py script.")
         summary_log = []
         summary_log_eval = []
         # Convert video to images

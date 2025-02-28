@@ -67,9 +67,7 @@ class BruisefactoModel(SplatfactoModel):
         self.step = 30000
         if "means" in dict:
             # For backwards compatibility, remap names of parameters from means->gauss_params.means for old checkpoints
-            param_list = ["means", "scales", "quats", "features_dc", "features_rest", "opacities"]
-            param_list.append("bruise")
-            param_list.append("strawberry")
+            param_list = ["means", "scales", "quats", "features_dc", "features_rest", "opacities", "bruise", "strawberry"]
 
             for p in param_list:
                 dict[f"gauss_params.{p}"] = dict[p]
@@ -193,16 +191,16 @@ class BruisefactoModel(SplatfactoModel):
                 background = self.background_color.to(self.device)
         return background
     
-    def get_image_metrics_and_images(self, outputs: Dict[str, torch.Tensor], batch: Dict[str, Any]):
+    def get_image_metrics_and_images(self, outputs: Dict[str, torch.Tensor], batch: Dict[str, Any]): # type: ignore
         """
         Called by the pipeline for each image at eval time. 
         Returns:
             metrics_dict, images_dict
         """
-        # -- 1) First let the base class fill out standard metrics & images (PSNR, depth, etc.)
+        # First let the base class fill out standard metrics & images (PSNR, depth, etc.)
         metrics_dict, images_dict = super().get_image_metrics_and_images(outputs, batch)
 
-        # -- 2) Add bruise metrics if bruise is in batch
+        # Add bruise metrics if bruise is in batch
         if "bruise" in outputs and "bruise_mask" in batch:
             pred_bruise = outputs["bruise"]   # shape [H, W] or [H, W, 1]
             gt_bruise   = batch["bruise_mask"] # shape [H, W] or [1, H, W], etc.
@@ -217,12 +215,20 @@ class BruisefactoModel(SplatfactoModel):
             bruise_psnr = compute_psnr(pred_bruise, gt_bruise)
             metrics_dict["bruise_psnr"] = bruise_psnr
 
+        # Add strawberry bruise metrics if strawberry is in batch
         if "strawberry" in outputs and "strawberry_mask" in batch:
             pred_strawberry = outputs["strawberry"]   # shape [H, W] or [H, W, 1]
             gt_strawberry   = batch["strawberry_mask"] # shape [H, W] or [1, H, W], etc.
 
             if pred_strawberry.shape[:2] != gt_strawberry.shape[:2]:
                 gt_strawberry = resize_bruise_mask(gt_strawberry, pred_strawberry.shape[:2])
+
+            strawberry_iou_value = compute_bruise_iou(pred_strawberry, gt_strawberry)
+            metrics_dict["strawberry_iou"] = strawberry_iou_value
+
+            # Add PSNR for Strawberry
+            strawberry_psnr = compute_psnr(pred_strawberry, gt_strawberry)
+            metrics_dict["strawberry_psnr"] = strawberry_psnr
             
             return metrics_dict, images_dict
     
@@ -398,10 +404,19 @@ class BruisefactoModel(SplatfactoModel):
         alpha_overlay = 0.7
         rgb_with_bruise = alpha_overlay * bruise_overlay + (1 - alpha_overlay) * rgb.squeeze(0)  # [H, W, 3]
 
+        strawberry_color = torch.tensor([1.0, 0.0, 0.0], device=rgb.device, dtype=rgb.dtype)  # red
+        strawberry_overlay = strawberry_mask.squeeze(0).expand(-1, -1, 3) * strawberry_color  # [H, W, 3]
+
+        combined_overlay = bruise_overlay + strawberry_overlay
+        combined_overlay = torch.clamp(combined_overlay, 0.0, 1.0)
+        
+        rgb_with_strawberry_bruise = alpha_overlay * combined_overlay + (1 - alpha_overlay) * rgb.squeeze(0)
+
         return {
             "rgb": rgb.squeeze(0),  # type: ignore
             "bruise": bruise_mask.squeeze(0),  # type: ignore
             "strawberry": strawberry_mask.squeeze(0),
+            "strawberry_with_bruise": rgb_with_strawberry_bruise,
             "rgb_with_bruise": rgb_with_bruise,  # type: ignores
             "depth": depth_im,  # type: ignore
             "accumulation": alpha.squeeze(0),  # type: ignore
@@ -461,9 +476,15 @@ class BruisefactoModel(SplatfactoModel):
         else:
             scale_reg = torch.tensor(0.0).to(self.device)
 
+        lam = self.config.ssim_lambda
+        bruise_weight = 0.0001
+        bruise_loss_weighted = bruise_weight * bruise_mask_loss
+        strawberry_weight = 0.3
+        strawberry_loss_weighted = strawberry_weight * strawberry_mask_loss
+
         # Create loss dictionary
         loss_dict = {
-            "main_loss": (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss + bruise_mask_loss + strawberry_mask_loss,
+            "main_loss": (1 - lam) * Ll1 + lam * simloss + bruise_loss_weighted + strawberry_loss_weighted,
             "scale_reg": scale_reg,
         }
 
@@ -506,7 +527,6 @@ def num_sh_bases(degree: int) -> int:
     """
     assert degree <= 4, "We don't support degree greater than 4."
     return (degree + 1) ** 2
-
 
 def SH2RGB(sh):
     """

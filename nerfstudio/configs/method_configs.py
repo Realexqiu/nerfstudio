@@ -81,8 +81,7 @@ descriptions = {
     "neus": "Implementation of NeuS. (slow)",
     "neus-facto": "Implementation of NeuS-Facto. (slow)",
     "splatfacto": "Gaussian Splatting model",
-    "splatfacto-big": "Larger version of Splatfacto with higher quality.",
-    "bruisefacto": "Splatfacto with 2D bruising mask distillation.",
+    "splatfacto-big": "Larger version of Splatfacto with higher quality."
 }
 
 method_configs["nerfacto"] = TrainerConfig(

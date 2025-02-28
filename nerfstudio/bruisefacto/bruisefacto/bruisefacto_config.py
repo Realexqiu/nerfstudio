@@ -23,7 +23,7 @@ bruisefacto_method = MethodSpecification(
         method_name="bruisefacto",  # TODO: rename to your own model
         steps_per_eval_batch=200,
         steps_per_save=2000,
-        max_num_iterations=30000,
+        max_num_iterations=15000,
         mixed_precision=False,
         pipeline=BruisefactoPipelineConfig(
             datamanager=BruisefactoDatamanagerConfig(
@@ -31,22 +31,24 @@ bruisefacto_method = MethodSpecification(
                 cache_images_type="uint8",
             ),
             model=BruisefactoModelConfig(
+                # cull_alpha_thresh=0.005,
+                # densify_grad_thresh=0.0005,
                 eval_num_rays_per_chunk=1 << 15
             ),
         ),
-
         
         optimizers={
             "bruise": {
                 "optimizer": AdamOptimizerConfig(lr=0.01, eps=1e-15),
                 "scheduler": None,
             },
-             "means": {
-            "optimizer": AdamOptimizerConfig(lr=1.6e-4, eps=1e-15),
-            "scheduler": ExponentialDecaySchedulerConfig(
-                lr_final=1.6e-6,
-                max_steps=30000,
-            ),
+            "strawberry": {
+                "optimizer": AdamOptimizerConfig(lr=0.1, eps=1e-15),
+                "scheduler": None,
+            },
+            "means": {
+                "optimizer": AdamOptimizerConfig(lr=1.6e-4, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1.6e-6, max_steps=30000)
             },
             "features_dc": {
                 "optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15),
@@ -64,18 +66,17 @@ bruisefacto_method = MethodSpecification(
                 "optimizer": AdamOptimizerConfig(lr=0.005, eps=1e-15),
                 "scheduler": None,
             },
-            "quats": {"optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15), "scheduler": None},
+            "quats": {
+                "optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15), 
+                "scheduler": None
+            },
             "camera_opt": {
                 "optimizer": AdamOptimizerConfig(lr=1e-4, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(
-                    lr_final=5e-7, max_steps=30000, warmup_steps=1000, lr_pre_warmup=0
-                ),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=5e-7, max_steps=30000, warmup_steps=1000, lr_pre_warmup=0),
             },
             "bilateral_grid": {
-                "optimizer": AdamOptimizerConfig(lr=2e-3, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(
-                    lr_final=1e-4, max_steps=30000, warmup_steps=1000, lr_pre_warmup=0
-                ),
+                "optimizer": AdamOptimizerConfig(lr=5e-3, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-4, max_steps=30000, warmup_steps=1000, lr_pre_warmup=0),
             },
         },
         viewer=ViewerConfig(num_rays_per_chunk=1 << 15),

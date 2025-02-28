@@ -161,159 +161,159 @@ class VideoToNerfstudioDatasetBruisefacto(ColmapConverterToNerfstudioDataset):
 
         ## YOLO Segmentation -----------------------------------------------------------------------------------------
 
-        # # Path to best weights for YOLO segmentation model
-        # yolo_weights = Path(__file__).parent.parent / 'bruisefacto' / 'bruisefacto' / 'yolo_models' / 'P-0.873_R-0.817.pt'
+        # Path to best weights for YOLO segmentation model
+        yolo_weights = Path(__file__).parent.parent / 'bruisefacto' / 'bruisefacto' / 'yolo_models' / 'P-0.949_R-0.745.pt'
 
-        # # Apply YOLO segmentation model to each image
+        # Apply YOLO segmentation model to each image
             
-        # bruise_counter = 0
-        # yolo_model = YOLO(yolo_weights)
-        # yolo_mask_dir = self.output_dir / "yolo_masks"
-        # yolo_mask_dir.mkdir(parents=True, exist_ok=True)
+        bruise_counter = 0
+        yolo_model = YOLO(yolo_weights)
+        yolo_mask_dir = self.output_dir / "yolo_masks"
+        yolo_mask_dir.mkdir(parents=True, exist_ok=True)
 
-        # # Iterate through each image in the image directory
-        # for image_path in self.image_dir.iterdir():
-        #     if image_path.suffix not in [".jpg", ".png"]:
-        #         continue
+        # Iterate through each image in the image directory
+        for image_path in self.image_dir.iterdir():
+            if image_path.suffix not in [".jpg", ".png"]:
+                continue
             
-        #     # Run YOLO model on image
-        #     yolo_results = yolo_model(str(image_path), verbose=False)
-        #     yolo_pred = yolo_results[0]
+            # Run YOLO model on image
+            yolo_results = yolo_model(str(image_path), verbose=False)
+            yolo_pred = yolo_results[0]
 
-        #     # Load the original image
-        #     img = cv2.imread(image_path) # type: ignore
+            # Load the original image
+            img = cv2.imread(image_path) # type: ignore
 
-        #     # Create black and white image to save binary mask
-        #     yolo_binary_mask = np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
+            # Create black and white image to save binary mask
+            yolo_binary_mask = np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
 
-        #     # Save mask if YOLO model detected any bruises
-        #     if yolo_pred.masks is not None:
+            # Save mask if YOLO model detected any bruises
+            if yolo_pred.masks is not None:
 
-        #         # Extract the mask (pred.masks.data contains the binary masks)
-        #         yolo_masks_list = yolo_pred.masks.data.cpu().numpy()  # Convert to numpy array if needed
+                # Extract the mask (pred.masks.data contains the binary masks)
+                yolo_masks_list = yolo_pred.masks.data.cpu().numpy()  # Convert to numpy array if needed
 
-        #         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert BGR (OpenCV) to RGB (matplotlib)
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert BGR (OpenCV) to RGB (matplotlib)
 
-        #         # Iterate through each mask in masks list to combine into one mask file (if multiple bruises detected)
-        #         for yolo_mask in yolo_masks_list:
-        #             yolo_mask_resized = cv2.resize(yolo_mask, (img.shape[1], img.shape[0]))  # Ensure mask matches image size
-        #             yolo_binary_mask[yolo_mask_resized > 0.5] = 255
+                # Iterate through each mask in masks list to combine into one mask file (if multiple bruises detected)
+                for yolo_mask in yolo_masks_list:
+                    yolo_mask_resized = cv2.resize(yolo_mask, (img.shape[1], img.shape[0]))  # Ensure mask matches image size
+                    yolo_binary_mask[yolo_mask_resized > 0.5] = 255
                 
-        #         bruise_counter += 1
+                bruise_counter += 1
 
-        #     # Save combined binary mask
-        #     yolo_combined_mask_path = yolo_mask_dir / f"{image_path.stem}_bruise_mask.png"
-        #     cv2.imwrite(str(yolo_combined_mask_path), yolo_binary_mask)
+            # Save combined binary mask
+            yolo_combined_mask_path = yolo_mask_dir / f"{image_path.stem}_bruise_mask.png"
+            cv2.imwrite(str(yolo_combined_mask_path), yolo_binary_mask)
 
-        # CONSOLE.log("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
-        # CONSOLE.log("[bold green]:tada: :tada: :tada: YOLO masks successfully generated! :tada: :tada: :tada:")
-        # CONSOLE.log(f"[bold blue]Found bruises in {bruise_counter} out of {num_extracted_frames} images") # type: ignore
+        CONSOLE.log("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
+        CONSOLE.log("[bold green]:tada: :tada: :tada: YOLO masks successfully generated! :tada: :tada: :tada:")
+        CONSOLE.log(f"[bold blue]Found bruises in {bruise_counter} out of {num_extracted_frames} images") # type: ignore
 
-        # ## Grounded SAM2 Mask Segmentation
+        ## Grounded SAM2 Mask Segmentation
 
-        # # Grounded SAM Parameters:
-        # PROMPT = "red strawberry without leaves."  # text query must be lowercased and end with a dot
-        # SAM2_CHECKPOINT = '/home/alex/Documents/Grounded-SAM-2/checkpoints/sam2.1_hiera_base_plus.pt'
-        # SAM2_MODEL_CONFIG = '//home/alex/Documents/Grounded-SAM-2/sam2/configs/sam2.1/sam2.1_hiera_b+.yaml'
-        # G_DINO_CHECKPOINT = '/home/alex/Documents/Grounded-SAM-2/gdino_checkpoints/groundingdino_swint_ogc.pth'
-        # G_DINO_CONFIG = '/home/alex/Documents/Grounded-SAM-2/grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py'
-        # BOX_THRESHOLD = 0.35
-        # TEXT_THRESHOLD = 0.25
-        # DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+        # Grounded SAM Parameters:
+        PROMPT = "red strawberry without leaves."  # text query must be lowercased and end with a dot
+        SAM2_CHECKPOINT = '/home/alex/Documents/Grounded-SAM-2/checkpoints/sam2.1_hiera_base_plus.pt'
+        SAM2_MODEL_CONFIG = '//home/alex/Documents/Grounded-SAM-2/sam2/configs/sam2.1/sam2.1_hiera_b+.yaml'
+        G_DINO_CHECKPOINT = '/home/alex/Documents/Grounded-SAM-2/gdino_checkpoints/groundingdino_swint_ogc.pth'
+        G_DINO_CONFIG = '/home/alex/Documents/Grounded-SAM-2/grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py'
+        BOX_THRESHOLD = 0.35
+        TEXT_THRESHOLD = 0.25
+        DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # # Directories (assuming these directories already exist)
-        # sam_mask_dir = self.output_dir / "grounded_sam2_masks"  # Output folder for masks
-        # sam_mask_dir.mkdir(parents=True, exist_ok=True)
+        # Directories (assuming these directories already exist)
+        sam_mask_dir = self.output_dir / "grounded_sam2_masks"  # Output folder for masks
+        sam_mask_dir.mkdir(parents=True, exist_ok=True)
 
-        # # Build SAM2 image predictor
-        # sam2_model = build_sam2(SAM2_MODEL_CONFIG, SAM2_CHECKPOINT, device=DEVICE)
-        # sam2_predictor = SAM2ImagePredictor(sam2_model)
+        # Build SAM2 image predictor
+        sam2_model = build_sam2(SAM2_MODEL_CONFIG, SAM2_CHECKPOINT, device=DEVICE)
+        sam2_predictor = SAM2ImagePredictor(sam2_model)
 
-        # # Build GroundingDINO model
-        # g_model = load_model(model_config_path=G_DINO_CONFIG, model_checkpoint_path=G_DINO_CHECKPOINT, device=DEVICE)
+        # Build GroundingDINO model
+        g_model = load_model(model_config_path=G_DINO_CONFIG, model_checkpoint_path=G_DINO_CHECKPOINT, device=DEVICE)
 
-        # # Create strawberry counter to check if each frame has detected strawberry
-        # strawberry_counter = 0
-        # multi_mask_counter = 0
-        # multi_masks_path = []
+        # Create strawberry counter to check if each frame has detected strawberry
+        strawberry_counter = 0
+        multi_mask_counter = 0
+        multi_masks_path = []
 
-        # # Iterate through each image in the image directory
-        # for image_path in self.image_dir.iterdir():
-        #     if image_path.suffix.lower() not in [".jpg", ".png", ".jpeg"]:
-        #         continue
+        # Iterate through each image in the image directory
+        for image_path in self.image_dir.iterdir():
+            if image_path.suffix.lower() not in [".jpg", ".png", ".jpeg"]:
+                continue
 
-        #     # Load image using GroundingDINO utility (returns original image and one for SAM2)
-        #     image_source, img = load_image(str(image_path))
-        #     h, w, _ = image_source.shape
+            # Load image using GroundingDINO utility (returns original image and one for SAM2)
+            image_source, img = load_image(str(image_path))
+            h, w, _ = image_source.shape
 
-        #     # Set image for SAM2 predictor
-        #     sam2_predictor.set_image(image_source)
+            # Set image for SAM2 predictor
+            sam2_predictor.set_image(image_source)
 
-        #     # Get bounding boxes from GroundingDINO using the text query
-        #     boxes, _, _ = predict(g_model, img, PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD)
+            # Get bounding boxes from GroundingDINO using the text query
+            boxes, _, _ = predict(g_model, img, PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD)
 
-        #     # If no bounding boxes are detected, create an empty binary mask
-        #     if boxes.numel() == 0:
-        #         final_sam_mask = np.zeros((h, w), dtype=np.uint8)
-        #     else:
-        #         # Rescale boxes to image dimensions and convert from cxcywh to xyxy
-        #         boxes = boxes * torch.Tensor([w, h, w, h])
-        #         input_boxes = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy()
+            # If no bounding boxes are detected, create an empty binary mask
+            if boxes.numel() == 0:
+                final_sam_mask = np.zeros((h, w), dtype=np.uint8)
+            else:
+                # Rescale boxes to image dimensions and convert from cxcywh to xyxy
+                boxes = boxes * torch.Tensor([w, h, w, h])
+                input_boxes = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy()
 
-        #         # Run SAM2 to get masks for the given boxes
-        #         sam_mask, _, _ = sam2_predictor.predict(point_coords=None, point_labels=None, box=input_boxes, multimask_output=False)
+                # Run SAM2 to get masks for the given boxes
+                sam_mask, _, _ = sam2_predictor.predict(point_coords=None, point_labels=None, box=input_boxes, multimask_output=False)
 
-        #         # Remove extra dimension if present
-        #         if sam_mask.ndim == 4:
-        #             sam_mask = sam_mask.squeeze(1)
+                # Remove extra dimension if present
+                if sam_mask.ndim == 4:
+                    sam_mask = sam_mask.squeeze(1)
 
-        #         # Initialize the final binary mask
-        #         final_sam_mask = np.zeros((h, w), dtype=np.uint8)
+                # Initialize the final binary mask
+                final_sam_mask = np.zeros((h, w), dtype=np.uint8)
 
-        #         # If multiple masks are detected, combine them into a single mask
-        #         if sam_mask.shape[0] > 1:
-        #             multi_mask_counter += 1
-        #             multi_masks_path.append(image_path)
+                # If multiple masks are detected, combine them into a single mask
+                if sam_mask.shape[0] > 1:
+                    multi_mask_counter += 1
+                    multi_masks_path.append(image_path)
                     
-        #             best_mask = None
-        #             best_red_count = -1
+                    best_mask = None
+                    best_red_count = -1
                     
-        #             # Iterate over each detected mask
-        #             for mask in sam_mask:
-        #                 # Resize the mask to match the image dimensions
-        #                 mask_resized = cv2.resize(mask, (w, h))
-        #                 binary_mask = (mask_resized > 0.5).astype(np.uint8) * 255
+                    # Iterate over each detected mask
+                    for mask in sam_mask:
+                        # Resize the mask to match the image dimensions
+                        mask_resized = cv2.resize(mask, (w, h))
+                        binary_mask = (mask_resized > 0.5).astype(np.uint8) * 255
                         
-        #                 # Apply the mask to the original image
-        #                 masked_img = cv2.bitwise_and(image_source, image_source, mask=binary_mask)
+                        # Apply the mask to the original image
+                        masked_img = cv2.bitwise_and(image_source, image_source, mask=binary_mask)
                         
-        #                 # Count red pixels in the masked area. Since OpenCV uses BGR, the red channel is at index 2.
-        #                 red_c, green_c, blue_c = masked_img[:, :, 2], masked_img[:, :, 1], masked_img[:, :, 0]
+                        # Count red pixels in the masked area. Since OpenCV uses BGR, the red channel is at index 2.
+                        red_c, green_c, blue_c = masked_img[:, :, 2], masked_img[:, :, 1], masked_img[:, :, 0]
 
-        #                 # Define a red pixel: red > 127 and red > green and red > blue.
-        #                 red_pixels = np.logical_and(red_c > 127, np.logical_and(red_c > green_c, red_c > blue_c))
-        #                 red_count = np.sum(red_pixels)
+                        # Define a red pixel: red > 127 and red > green and red > blue.
+                        red_pixels = np.logical_and(red_c > 127, np.logical_and(red_c > green_c, red_c > blue_c))
+                        red_count = np.sum(red_pixels)
                         
-        #                 # Update the best mask if this one has more red pixels.
-        #                 if red_count > best_red_count:
-        #                     best_red_count = red_count
-        #                     best_mask = binary_mask
+                        # Update the best mask if this one has more red pixels.
+                        if red_count > best_red_count:
+                            best_red_count = red_count
+                            best_mask = binary_mask
 
-        #             # Return only the mask with the most red pixels, as this is most likely to be the strawberry
-        #             final_sam_mask = best_mask
-        #         elif sam_mask.shape[0] == 1:
-        #             strawberry_counter += 1
-        #             mask_resized = cv2.resize(sam_mask[0], (w, h))  # Resize if needed
-        #             final_sam_mask = (mask_resized > 0.5).astype(np.uint8) * 255  # Convert to binary
+                    # Return only the mask with the most red pixels, as this is most likely to be the strawberry
+                    final_sam_mask = best_mask
+                elif sam_mask.shape[0] == 1:
+                    strawberry_counter += 1
+                    mask_resized = cv2.resize(sam_mask[0], (w, h))  # Resize if needed
+                    final_sam_mask = (mask_resized > 0.5).astype(np.uint8) * 255  # Convert to binary
 
-        #     # Save the combined binary mask image (naming convention similar to YOLO snippet)
-        #     sam_output_mask_path = sam_mask_dir / f"{image_path.stem}_strawberry_mask.png"
-        #     cv2.imwrite(str(sam_output_mask_path), final_sam_mask) # type: ignore
+            # Save the combined binary mask image (naming convention similar to YOLO snippet)
+            sam_output_mask_path = sam_mask_dir / f"{image_path.stem}_strawberry_mask.png"
+            cv2.imwrite(str(sam_output_mask_path), final_sam_mask) # type: ignore
 
-        # CONSOLE.log("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
-        # CONSOLE.log("[bold green]:tada: :tada: :tada: Grounded SAM2 masks successfully generated! :tada: :tada: :tada:")
-        # CONSOLE.log(f"[bold blue] {strawberry_counter} frames out of {num_extracted_frames} with strawberries found.")
-        # CONSOLE.log(f"[bold blue]Found {multi_mask_counter} frames with multiple masks.")
+        CONSOLE.log("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
+        CONSOLE.log("[bold green]:tada: :tada: :tada: Grounded SAM2 masks successfully generated! :tada: :tada: :tada:")
+        CONSOLE.log(f"[bold blue] {strawberry_counter} frames out of {num_extracted_frames} with strawberries found.")
+        CONSOLE.log(f"[bold blue]Found {multi_mask_counter} frames with multiple masks.")
 
         for summary in summary_log:
             CONSOLE.log(summary)

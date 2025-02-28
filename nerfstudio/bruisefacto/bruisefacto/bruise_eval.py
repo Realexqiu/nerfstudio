@@ -23,18 +23,27 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+import numpy as np
+import copy
+import plotly.graph_objects as go
+import pandas as pd
+import struct
+import open3d as o3d
 
 import tyro
 
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import CONSOLE
 from nerfstudio.scripts.exporter import ExportGaussianSplat
+from nerfstudio.bruisefacto.bruisefacto import bruise_eval_utils as util
+
+## To run bruise_eval.py, use the following command: ns-bruise-eval --config-pre /path/to/config_pre.yaml --config-post /path/to/config_post.yaml --output-path /path/to/output.json
 
 @dataclass
 class ComputeBruiseMetrics:
     """Load a checkpoint, compute some Bruise metrics, and save it to a JSON file."""
 
-    # Path to config YAML file for pre and post splats. Tyro automatically creates CLI arguments from these class attributes
+    # Path to config YAML file for pre and post splats. Tyro automatically creates CLI arguments from class attributes
     config_pre: Path
     config_post: Path
 
@@ -44,12 +53,11 @@ class ComputeBruiseMetrics:
     # Output directory
     output_dir: Path = output_path.parent
 
-    # Optional path to save rendered outputs to.
-    render_output_path: Optional[Path] = None
+    # Path to save rendered outputs to.
+    render_output_path: Path = output_dir
 
     def main(self) -> None:
         """Main function."""
-        import pdb; pdb.set_trace()
 
         # Create output directory if it doesn't exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -69,23 +77,31 @@ class ComputeBruiseMetrics:
         pre_metrics_dict = pre_pipeline.get_average_eval_image_metrics(output_path=self.output_dir, get_std=True)
         post_metrics_dict = post_pipeline.get_average_eval_image_metrics(output_path=self.output_dir, get_std=True)
 
+        import pdb; pdb.set_trace()
+
         # Export point clouds for pre and post splats
         pre_gs_exp = ExportGaussianSplat(load_config=self.config_pre, output_dir=self.output_dir, output_filename="pre_splat.ply")
         post_gs_exp = ExportGaussianSplat(load_config=self.config_post, output_dir=self.output_dir, output_filename="post_splat.ply")
-
         pre_gs_exp.main()
         post_gs_exp.main()
 
-        # Read the point clouds from the output directory
+        # Define point cloud paths
+        pre_splat_path = self.output_dir / "pre_splat.ply"
+        post_splat_path = self.output_dir / "post_splat.ply"
 
-        # 
-        
+        # Read and visualize the point clouds from the output directory
+        pre_splat_ply_dataframe = util.load_ply_binary(pre_splat_path)
+        post_splat_ply_dataframe = util.load_ply_binary(post_splat_path)
+        pre_splat_ply = util.filter_point_cloud_from_dataframe(pre_splat_ply_dataframe)
+        post_splat_ply = util.filter_point_cloud_from_dataframe(post_splat_ply_dataframe)
+        util.show_point_cloud(pre_splat_ply)
+        util.show_point_cloud(post_splat_ply)
 
+        # Align point clouds and calculate max chamfer distance using gradient-descent
+        max_chamfer_distance = util.gradient_based_alignment(pre_splat_ply, post_splat_ply)
 
-        max_chamfer_distance = 0
-        pre_splat_mesh_volume = 0
-        post_splat_mesh_volume = 0
-        volume_difference = 0
+        # Construct mesh and estimate volume difference
+        pre_splat_mesh_volume, post_splat_mesh_volume, volume_diff = util.mesh_construct_eval(pre_splat_ply, post_splat_ply)
 
         # Get the output and define the names to save to
         benchmark_info = {
@@ -104,10 +120,10 @@ class ComputeBruiseMetrics:
             "Max_Chamfer_Distance": max_chamfer_distance,
             "Pre-Splat Mesh Volume": pre_splat_mesh_volume,
             "Post-Splat Mesh Volume": post_splat_mesh_volume,
-            "Mesh Volume Difference": volume_difference
+            "Mesh Volume Difference": volume_diff
         }
-        print(pre_metrics_dict)
 
+        
         # Save output to output file
         self.output_path.write_text(json.dumps(benchmark_info, indent=2), "utf8")
         CONSOLE.print(f"Saved results to: {self.output_path}")
@@ -124,3 +140,4 @@ if __name__ == "__main__":
 
 # For sphinx docs
 get_parser_fn = lambda: tyro.extras.get_parser(ComputeBruiseMetrics)  # noqa
+
