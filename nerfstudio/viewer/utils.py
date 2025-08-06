@@ -143,7 +143,7 @@ def parse_object(
     ret = []
     # get a list of the properties of the object, sorted by whether things are instances of type_check
     # we skip cached properties, which can be expensive to call `getattr()` on!
-    obj_props = [(k, getattr(obj, k)) for k in dir(obj) if not isinstance(getattr(type(obj), k, None), cached_property)]
+    obj_props = [(k, getattr(obj, k, None)) for k in dir(obj) if not isinstance(getattr(type(obj), k, None), cached_property)]
     for k, v in obj_props:
         if k[0] == "_":
             continue

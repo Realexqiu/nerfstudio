@@ -44,6 +44,7 @@ class ComputePSNR:
     def main(self) -> None:
         """Main function."""
         config, pipeline, checkpoint_path, _ = eval_setup(self.load_config)
+        import pdb; pdb.set_trace()
         assert self.output_path.suffix == ".json"
         if self.render_output_path is not None:
             self.render_output_path.mkdir(parents=True, exist_ok=True)

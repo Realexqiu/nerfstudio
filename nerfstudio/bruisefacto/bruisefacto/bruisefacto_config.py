@@ -1,14 +1,12 @@
 """
-Nerfstudio Template Config
-
-Define your custom method here that registers with Nerfstudio CLI.
+Bruisefacto configuration file.
 """
 
 from __future__ import annotations
 
-from bruisefacto.bruisefacto_datamanager import BruisefactoDatamanagerConfig
-from bruisefacto.bruisefacto import BruisefactoModelConfig
-from bruisefacto.bruisefacto_pipeline import BruisefactoPipelineConfig
+from nerfstudio.bruisefacto.bruisefacto.bruisefacto_datamanager import BruisefactoDatamanagerConfig
+from nerfstudio.bruisefacto.bruisefacto.bruisefacto import BruisefactoModelConfig
+from nerfstudio.bruisefacto.bruisefacto.bruisefacto_pipeline import BruisefactoPipelineConfig
 
 from nerfstudio.configs.base_config import ViewerConfig
 from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
@@ -20,9 +18,9 @@ from nerfstudio.plugins.types import MethodSpecification
 
 bruisefacto_method = MethodSpecification(
     config=TrainerConfig(
-        method_name="bruisefacto",  # TODO: rename to your own model
+        method_name="bruisefacto", 
         steps_per_eval_batch=200,
-        steps_per_save=2000,
+        steps_per_save=5000,
         max_num_iterations=15000,
         mixed_precision=False,
         pipeline=BruisefactoPipelineConfig(
@@ -31,20 +29,25 @@ bruisefacto_method = MethodSpecification(
                 cache_images_type="uint8",
             ),
             model=BruisefactoModelConfig(
-                # cull_alpha_thresh=0.005,
-                # densify_grad_thresh=0.0005,
-                eval_num_rays_per_chunk=1 << 15
+                cull_alpha_thresh=0.1, # Same as splatfacto, lowering causing wall of clear gaussians
+                densify_grad_thresh=0.0008, # 0.0008
+                eval_num_rays_per_chunk=1 << 15,
+                freeze_rgb=False,
+                freeze_bruise=False,
+                freeze_strawberry=False,
+                bruise_weight=1,
+                strawberry_weight=0.2,
             ),
         ),
         
         optimizers={
             "bruise": {
-                "optimizer": AdamOptimizerConfig(lr=0.01, eps=1e-15),
-                "scheduler": None,
+                "optimizer": AdamOptimizerConfig(lr=1e-4, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-6, max_steps=30000),
             },
             "strawberry": {
-                "optimizer": AdamOptimizerConfig(lr=0.1, eps=1e-15),
-                "scheduler": None,
+                "optimizer": AdamOptimizerConfig(lr=5e-5, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-6, max_steps=30000),
             },
             "means": {
                 "optimizer": AdamOptimizerConfig(lr=1.6e-4, eps=1e-15),

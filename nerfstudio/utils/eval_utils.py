@@ -44,7 +44,7 @@ def eval_load_checkpoint(config: TrainerConfig, pipeline: Pipeline) -> Tuple[Pat
     """
     assert config.load_dir is not None
     if config.load_step is None:
-        CONSOLE.print("Loading latest checkpoint from load_dir")
+        # CONSOLE.print("Loading latest checkpoint from load_dir")  # Suppressed for cleaner output
         # NOTE: this is specific to the checkpoint name format
         if not os.path.exists(config.load_dir):
             CONSOLE.rule("Error", style="red")
@@ -59,7 +59,20 @@ def eval_load_checkpoint(config: TrainerConfig, pipeline: Pipeline) -> Tuple[Pat
         load_step = config.load_step
     load_path = config.load_dir / f"step-{load_step:09d}.ckpt"
     assert load_path.exists(), f"Checkpoint {load_path} does not exist"
-    loaded_state = torch.load(load_path, map_location="cpu")
+    
+    # Add numpy types to safe globals for weights_only loading
+    import numpy as np
+    torch.serialization.add_safe_globals([
+        np._core.multiarray.scalar, 
+        np.dtype,
+        np.dtypes.Float64DType,
+        np.dtypes.Float32DType,
+        np.dtypes.Int64DType,
+        np.dtypes.Int32DType,
+        np.dtypes.BoolDType
+    ])
+    
+    loaded_state = torch.load(load_path, map_location="cpu", weights_only=True)
     pipeline.load_pipeline(loaded_state["pipeline"], loaded_state["step"])
     CONSOLE.print(f":white_check_mark: Done loading checkpoint from {load_path}")
     return load_path, load_step

@@ -6,6 +6,8 @@ import struct
 import trimesh
 import open3d as o3d
 import torch
+from pathlib import Path
+from typing import Union, Optional
 
 def mesh_construct_eval(pcd1_np, pcd2_np):
     """
@@ -331,7 +333,17 @@ def load_ply_binary(ply_path):
     df = pd.DataFrame(data, columns=properties)
     return df
 
-def filter_point_cloud_from_dataframe(df: pd.DataFrame, min: np.ndarray | None = None, max: np.ndarray | None = None):
+def load_ply_with_open3d(path: Path) -> pd.DataFrame:
+    # read_point_cloud auto‑detects ASCII vs binary
+    pcd = o3d.io.read_point_cloud(str(path))
+    pts = np.asarray(pcd.points)                # (N,3) float64 array
+    df = pd.DataFrame(pts, columns=["x","y","z"])
+    # if you need colors or normals, you can do:
+    # if pcd.has_colors(): df[["r","g","b"]] = np.asarray(pcd.colors)
+    # if pcd.has_normals(): df[["nx","ny","nz"]] = np.asarray(pcd.normals)
+    return df
+
+def filter_point_cloud_from_dataframe(df: pd.DataFrame, min: Optional[np.ndarray] = None, max: Optional[np.ndarray] = None):
     """
     Filters point cloud data from a dataframe based on predefined XYZ thresholds.
 
@@ -365,7 +377,7 @@ def filter_point_cloud_from_dataframe(df: pd.DataFrame, min: np.ndarray | None =
 
     return filtered_points
 
-def show_point_cloud(pcd, title: str | None = None):
+def show_point_cloud(pcd, title: Optional[str] = None):
     """
     Displays a 3D point cloud using Plotly graph objects.
 

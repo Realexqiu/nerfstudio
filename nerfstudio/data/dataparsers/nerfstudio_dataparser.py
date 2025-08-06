@@ -481,7 +481,7 @@ class Nerfstudio(DataParser):
                     df += 1
 
                 self.downscale_factor = 2**df
-                CONSOLE.log(f"Auto image downscale factor of {self.downscale_factor}")
+                # CONSOLE.log(f"Auto image downscale factor of {self.downscale_factor}")  # Suppressed for cleaner output
             else:
                 self.downscale_factor = self.config.downscale_factor
 

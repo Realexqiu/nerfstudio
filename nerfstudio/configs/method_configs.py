@@ -706,7 +706,6 @@ method_configs["splatfacto-big"] = TrainerConfig(
     vis="viewer",
 )
 
-
 def merge_methods(methods, method_descriptions, new_methods, new_descriptions, overwrite=True):
     """Merge new methods and descriptions into existing methods and descriptions.
     Args:

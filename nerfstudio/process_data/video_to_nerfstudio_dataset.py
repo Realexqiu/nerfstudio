@@ -33,7 +33,7 @@ class VideoToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
     2. Calculates the camera poses for each image using `COLMAP <https://colmap.github.io/>`_.
     """
 
-    num_frames_target: int = 300
+    num_frames_target: int = 400
     """Target number of frames to use per video, results may not be exact."""
     percent_radius_crop: float = 1.0
     """Create circle crop mask. The radius is the percent of the image diagonal."""

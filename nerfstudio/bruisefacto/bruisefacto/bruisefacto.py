@@ -35,8 +35,12 @@ class BruisefactoModelConfig(SplatfactoModelConfig):
     Add your custom model config parameters here.
     """
     
-    _target: Type = field(default_factory=lambda: BruisefactoModel) 
-
+    _target: Type = field(default_factory=lambda: BruisefactoModel)
+    freeze_rgb: bool = False
+    freeze_bruise: bool = False
+    freeze_strawberry: bool = False
+    bruise_weight: float = 1
+    strawberry_weight: float = 0.2
 
 class BruisefactoModel(SplatfactoModel):
     """Bruisefacto Model."""
@@ -94,7 +98,7 @@ class BruisefactoModel(SplatfactoModel):
         quats = torch.nn.Parameter(random_quat_tensor(num_points))
         dim_sh = num_sh_bases(self.config.sh_degree)
 
-        # Randomly initialize strawberry and bruise masks
+        # Randomly initialize strawberry and bruise masks (like original working implementation)
         bruise = torch.nn.Parameter(torch.rand(means.shape[0], 1))
         strawberry = torch.nn.Parameter(torch.rand(means.shape[0], 1))
 
@@ -328,7 +332,14 @@ class BruisefactoModel(SplatfactoModel):
             # radius_clip=3.0,
         )
 
-        # Perform bruise mask rendering
+        # Call strategy.step_pre_backward immediately after main RGB rasterization
+        # This ensures densification decisions are based only on RGB gradients, not auxiliary mask gradients
+        if self.training:
+            self.strategy.step_pre_backward(
+                self.gauss_params, self.optimizers, self.strategy_state, self.step, self.info
+            )
+
+        # Perform bruise mask rendering (gradients from this will be used for loss computation)
         bruise_mask, _, _ = rasterization(
             means=means_crop,
             quats=quats_crop,
@@ -351,7 +362,7 @@ class BruisefactoModel(SplatfactoModel):
         )
         bruise_mask = bruise_mask[..., 0:1]  # Use the first channel for the mask
 
-        # Perform strawberry mask rendering
+        # Perform strawberry mask rendering (gradients from this will be used for loss computation)
         strawberry_mask, _, _ = rasterization(
             means=means_crop,
             quats=quats_crop,
@@ -374,10 +385,6 @@ class BruisefactoModel(SplatfactoModel):
         )
         strawberry_mask = strawberry_mask[..., 0:1]  # Use the first channel for the mask
 
-        if self.training:
-            self.strategy.step_pre_backward(
-                self.gauss_params, self.optimizers, self.strategy_state, self.step, self.info
-            )
         alpha = alpha[:, ...]
 
         background = self._get_background_color()
@@ -404,10 +411,11 @@ class BruisefactoModel(SplatfactoModel):
         alpha_overlay = 0.7
         rgb_with_bruise = alpha_overlay * bruise_overlay + (1 - alpha_overlay) * rgb.squeeze(0)  # [H, W, 3]
 
-        strawberry_color = torch.tensor([1.0, 0.0, 0.0], device=rgb.device, dtype=rgb.dtype)  # red
+        strawberry_color = torch.tensor([1.0, 0.0, 0.0], device=rgb.device, dtype=rgb.dtype)  
         strawberry_overlay = strawberry_mask.squeeze(0).expand(-1, -1, 3) * strawberry_color  # [H, W, 3]
 
-        combined_overlay = bruise_overlay + strawberry_overlay
+        # combined_overlay = bruise_overlay + strawberry_overlay
+        combined_overlay = torch.maximum(bruise_overlay, strawberry_overlay)
         combined_overlay = torch.clamp(combined_overlay, 0.0, 1.0)
         
         rgb_with_strawberry_bruise = alpha_overlay * combined_overlay + (1 - alpha_overlay) * rgb.squeeze(0)
@@ -433,13 +441,23 @@ class BruisefactoModel(SplatfactoModel):
         """
         # Compute loss for bruise parameter
         pred_bruise = outputs["bruise"]
+        
+        # Debug: Check if masks are in batch
+        bruise_mask_in_batch = "bruise_mask" in batch
+        strawberry_mask_in_batch = "strawberry_mask" in batch
 
-        if "bruise_mask" in batch:
+        if bruise_mask_in_batch:
             # batch["bruise_mask"] : [H, W, 1]        
             bruise_mask = downscale_mask_to_pred_shape(batch["bruise_mask"], pred_bruise).to(self.device)
-
-            # compute binary cross entropy loss
             bruise_mask_loss = F.binary_cross_entropy_with_logits(pred_bruise, bruise_mask)
+
+            # # Only apply loss if mask has sufficient content (>1% of pixels)
+            # mask_ratio = torch.mean(bruise_mask)
+            # if mask_ratio > 0.01:
+            #     # pred_bruise contains logits from rasterization, so use BCE_with_logits
+            #     bruise_mask_loss = F.binary_cross_entropy_with_logits(pred_bruise, bruise_mask)
+            # else:
+            #     bruise_mask_loss = torch.tensor(0.0).to(self.device)
             
         else:
             bruise_mask_loss = torch.tensor(0.0).to(self.device)
@@ -447,12 +465,17 @@ class BruisefactoModel(SplatfactoModel):
         # Compute loss for strawberry parameter
         pred_strawberry = outputs["strawberry"]
 
-        if "strawberry_mask" in batch:
+        if strawberry_mask_in_batch:
             # batch["strawberry_mask"] : [H, W, 1]        
             strawberry_mask = downscale_mask_to_pred_shape(batch["strawberry_mask"], pred_strawberry).to(self.device)
-
-            # compute binary cross entropy loss
-            strawberry_mask_loss = F.binary_cross_entropy_with_logits(pred_strawberry, strawberry_mask)
+            
+            # Only apply loss if mask has sufficient content (>1% of pixels)
+            mask_ratio = torch.mean(strawberry_mask)
+            if mask_ratio > 0.01:
+                # pred_strawberry contains logits from rasterization, so use BCE_with_logits
+                strawberry_mask_loss = F.binary_cross_entropy_with_logits(pred_strawberry, strawberry_mask)
+            else:
+                strawberry_mask_loss = torch.tensor(0.0).to(self.device)
             
         else:
             strawberry_mask_loss = torch.tensor(0.0).to(self.device)
@@ -476,17 +499,39 @@ class BruisefactoModel(SplatfactoModel):
         else:
             scale_reg = torch.tensor(0.0).to(self.device)
 
-        lam = self.config.ssim_lambda
-        bruise_weight = 0.0001
-        bruise_loss_weighted = bruise_weight * bruise_mask_loss
-        strawberry_weight = 0.3
-        strawberry_loss_weighted = strawberry_weight * strawberry_mask_loss
+        lam = self.config.ssim_lambda  
+        
+        bruise_loss_weighted = self.config.bruise_weight * bruise_mask_loss
+        strawberry_loss_weighted = self.config.strawberry_weight * strawberry_mask_loss
 
-        # Create loss dictionary
+        # Create loss dictionary - combine all losses into main_loss like splatfacto
+        rgb_loss = (1 - lam) * Ll1 + lam * simloss
+        total_loss = rgb_loss + bruise_loss_weighted + strawberry_loss_weighted
+        
         loss_dict = {
-            "main_loss": (1 - lam) * Ll1 + lam * simloss + bruise_loss_weighted + strawberry_loss_weighted,
+            "main_loss": total_loss,
             "scale_reg": scale_reg,
         }
+        
+        # Add individual loss components for monitoring (not included in total)
+        if self.training:
+            loss_dict["rgb_loss_monitor"] = rgb_loss.detach()
+            loss_dict["bruise_loss_monitor"] = bruise_loss_weighted.detach() 
+            loss_dict["strawberry_loss_monitor"] = strawberry_loss_weighted.detach()
+            
+            # Add auxiliary parameter statistics for debugging
+            loss_dict["bruise_mean_monitor"] = torch.mean(torch.sigmoid(self.bruise)).detach()
+            loss_dict["strawberry_mean_monitor"] = torch.mean(torch.sigmoid(self.strawberry)).detach()
+            loss_dict["bruise_max_monitor"] = torch.max(torch.sigmoid(self.bruise)).detach()
+            loss_dict["strawberry_max_monitor"] = torch.max(torch.sigmoid(self.strawberry)).detach()
+            
+            # Debug mask loading and loss computation
+            loss_dict["bruise_mask_in_batch"] = torch.tensor(float(bruise_mask_in_batch)).to(self.device)
+            loss_dict["strawberry_mask_in_batch"] = torch.tensor(float(strawberry_mask_in_batch)).to(self.device)
+            loss_dict["raw_bruise_loss"] = bruise_mask_loss.detach()
+            loss_dict["raw_strawberry_loss"] = strawberry_mask_loss.detach()
+            loss_dict["bruise_weight_monitor"] = torch.tensor(self.config.bruise_weight).to(self.device)
+            loss_dict["strawberry_weight_monitor"] = torch.tensor(self.config.strawberry_weight).to(self.device)
 
         if self.training:
             # Add loss from camera optimizer

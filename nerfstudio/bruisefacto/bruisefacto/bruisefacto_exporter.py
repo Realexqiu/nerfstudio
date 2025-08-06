@@ -21,15 +21,16 @@ from __future__ import annotations
 import sys
 import typing
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
-from typing import  Optional, Tuple, Union, cast
+from typing import Optional, Tuple, Union
 
 import numpy as np
 import torch
 import tyro
 from typing_extensions import Annotated, Literal
+import open3d as o3d
 
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.data.scene_box import OrientedBox
@@ -42,7 +43,6 @@ from nerfstudio.utils.rich_utils import CONSOLE
 @dataclass
 class Exporter:
     """Export the mesh from a YML config to a folder."""
-
     load_config: Path
     """Path to the config YAML file."""
     output_dir: Path
@@ -51,7 +51,6 @@ class Exporter:
 
 def validate_pipeline(normal_method: str, normal_output_name: str, pipeline: Pipeline) -> None:
     """Check that the pipeline is valid for this exporter.
-
     Args:
         normal_method: Method to estimate normals with. Either "open3d" or "model_output".
         normal_output_name: Name of the normal output.
@@ -62,33 +61,24 @@ def validate_pipeline(normal_method: str, normal_output_name: str, pipeline: Pip
         origins = torch.zeros((1, 3), device=pipeline.device)
         directions = torch.ones_like(origins)
         pixel_area = torch.ones_like(origins[..., :1])
-        camera_indices = torch.zeros_like(origins[..., :1])
+        camera_inds = torch.zeros_like(origins[..., :1])
         metadata = {"directions_norm": torch.linalg.vector_norm(directions, dim=-1, keepdim=True)}
-        ray_bundle = RayBundle(
-            origins=origins,
-            directions=directions,
-            pixel_area=pixel_area,
-            camera_indices=camera_indices,
-            metadata=metadata,
-        )
+        ray_bundle = RayBundle(origins, directions, pixel_area, camera_inds, metadata)
         outputs = pipeline.model(ray_bundle)
         if normal_output_name not in outputs:
             CONSOLE.print(f"[bold yellow]Warning: Normal output '{normal_output_name}' not found in pipeline outputs.")
             CONSOLE.print(f"Available outputs: {list(outputs.keys())}")
-            CONSOLE.print(
-                "[bold yellow]Warning: Please train a model with normals "
-                "(e.g., nerfacto with predicted normals turned on)."
-            )
+            CONSOLE.print("[bold yellow]Warning: Please train a model with normals (e.g., nerfacto with predicted normals turned on).")
             CONSOLE.print("[bold yellow]Warning: Or change --normal-method")
             CONSOLE.print("[bold yellow]Exiting early.")
             sys.exit(1)
 
+
 @dataclass
-class ExportGaussianSplat(Exporter):
+class Export3DGS(Exporter):
     """
     Export 3D Gaussian Splatting model to a .ply
     """
-
     output_filename: str
     """Name of the output file."""
     obb_center: Optional[Tuple[float, float, float]] = None
@@ -97,27 +87,24 @@ class ExportGaussianSplat(Exporter):
     """Rotation of the oriented bounding box. Expressed as RPY Euler angles in radians"""
     obb_scale: Optional[Tuple[float, float, float]] = None
     """Scale of the oriented bounding box along each axis."""
-    ply_color_mode: Literal["sh_coeffs", "rgb"] = "sh_coeffs"
+    ply_color_mode: Literal["sh_coeffs", "rgb"] = "rgb"
     """If "rgb", export colors as red/green/blue fields. Otherwise, export colors as
     spherical harmonics coefficients."""
 
+    bruise_threshold: float = 0.3
+    strawberry_threshold: float = 0.5
+
     @staticmethod
-    def write_ply(
-        filename: str,
-        count: int,
-        map_to_tensors: typing.OrderedDict[str, np.ndarray],
-    ):
+    def write_ply(filename: str, count: int, map_to_tensors: typing.OrderedDict[str, np.ndarray]):
         """
         Writes a PLY file with given vertex properties and a tensor of float or uint8 values in the order specified by the OrderedDict.
         Note: All float values will be converted to float32 for writing.
-
         Parameters:
         filename (str): The name of the file to write.
         count (int): The number of vertices to write.
         map_to_tensors (OrderedDict[str, np.ndarray]): An ordered dictionary mapping property names to numpy arrays of float or uint8 values.
             Each array should be 1-dimensional and of equal length matching 'count'. Arrays should not be empty.
         """
-
         # Ensure count matches the length of all tensors
         if not all(tensor.size == count for tensor in map_to_tensors.values()):
             raise ValueError("Count does not match the length of all tensors")
@@ -158,153 +145,153 @@ class ExportGaussianSplat(Exporter):
         CONSOLE.print(f"Point cloud saved to: {filename}")
 
     def main(self) -> None:
-        if not self.output_dir.exists():
-            self.output_dir.mkdir(parents=True)
-
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         _, pipeline, _, _ = eval_setup(self.load_config, test_mode="inference")
-
-        # assert isinstance(pipeline.model, BruisefactoModel)
-
         model: BruisefactoModel = pipeline.model
-
         filename = self.output_dir / self.output_filename
 
-        map_to_tensors = OrderedDict()
+        bruise_threshold = self.bruise_threshold    
+        strawberry_threshold = self.strawberry_threshold
 
+        # Gather all Gaussian parameters
         with torch.no_grad():
-            positions = model.means.cpu().numpy()
-            count = positions.shape[0]
-            n = count
-            map_to_tensors["x"] = positions[:, 0]
-            map_to_tensors["y"] = positions[:, 1]
-            map_to_tensors["z"] = positions[:, 2]
-            map_to_tensors["nx"] = np.zeros(n, dtype=np.float32)
-            map_to_tensors["ny"] = np.zeros(n, dtype=np.float32)
-            map_to_tensors["nz"] = np.zeros(n, dtype=np.float32)
+            # Base positions
+            pos = model.means.cpu().numpy()
+            mask = None
+            if self.obb_center and self.obb_rotation and self.obb_scale:
+                obb = OrientedBox.from_params(self.obb_center, self.obb_rotation, self.obb_scale)
+                mask = obb.within(torch.from_numpy(pos)).numpy()
+                pos = pos[mask]
 
-            if self.ply_color_mode == "rgb":
-                colors = torch.clamp(model.colors.clone(), 0.0, 1.0).data.cpu().numpy()
-                colors = (colors * 255).astype(np.uint8)
-                map_to_tensors["red"] = colors[:, 0]
-                map_to_tensors["green"] = colors[:, 1]
-                map_to_tensors["blue"] = colors[:, 2]
-            elif self.ply_color_mode == "sh_coeffs":
-                shs_0 = model.shs_0.contiguous().cpu().numpy()
-                for i in range(shs_0.shape[1]):
-                    map_to_tensors[f"f_dc_{i}"] = shs_0[:, i, None]
+            map_to_tensors: OrderedDict[str, np.ndarray] = OrderedDict()
+            map_to_tensors["x"] = pos[:, 0].astype(np.float32)
+            map_to_tensors["y"] = pos[:, 1].astype(np.float32)
+            map_to_tensors["z"] = pos[:, 2].astype(np.float32)
 
-            if model.config.sh_degree > 0:
-                if self.ply_color_mode == "rgb":
-                    CONSOLE.print(
-                        "Warning: model has higher level of spherical harmonics, ignoring them and only export rgb."
-                    )
-                elif self.ply_color_mode == "sh_coeffs":
-                    # transpose(1, 2) was needed to match the sh order in Inria version
-                    shs_rest = model.shs_rest.transpose(1, 2).contiguous().cpu().numpy()
-                    shs_rest = shs_rest.reshape((n, -1))
-                    for i in range(shs_rest.shape[-1]):
-                        map_to_tensors[f"f_rest_{i}"] = shs_rest[:, i, None]
+            # Colors & opacity
+            cols = (torch.clamp(model.colors, 0, 1).cpu().numpy() * 255).astype(np.uint8)
+            if mask is not None:
+                cols = cols[mask]
+            map_to_tensors["red"]   = cols[:, 0]
+            map_to_tensors["green"] = cols[:, 1]
+            map_to_tensors["blue"]  = cols[:, 2]
+            ops = model.opacities.cpu().numpy().astype(np.float32).squeeze(-1)
+            if mask is not None:
+                ops = ops[mask]
+            map_to_tensors["opacity"] = ops
 
-            map_to_tensors["opacity"] = model.opacities.data.cpu().numpy()
+            # Strawberry probabilities
+            straw = torch.sigmoid(model.strawberry).cpu().numpy().squeeze(-1)
+            if mask is not None:
+                straw = straw[mask]
+            map_to_tensors["strawberry_prob"] = straw.astype(np.float32)
 
-            scales = model.scales.data.cpu().numpy()
-            for i in range(3):
-                map_to_tensors[f"scale_{i}"] = scales[:, i, None]
+            # Bruise coloring
+            bruise = torch.sigmoid(model.bruise).cpu().numpy().squeeze(-1)
+            if mask is not None:
+                bruise = bruise[mask]
+            bruise_mask = bruise > bruise_threshold
+            map_to_tensors["red"][:]   = 255
+            map_to_tensors["green"][:] = 0
+            map_to_tensors["blue"][:]  = 0
+            map_to_tensors["blue"][bruise_mask] = 255
 
-            quats = model.quats.data.cpu().numpy()
-            for i in range(4):
-                map_to_tensors[f"rot_{i}"] = quats[:, i, None]
+        # Filter out non-finite & low-opacity
+        length = map_to_tensors["x"].shape[0]
+        valid = np.isfinite(map_to_tensors["x"]) & np.isfinite(map_to_tensors["y"]) & np.isfinite(map_to_tensors["z"])
+        valid &= map_to_tensors["opacity"] >= (1/255)
+        for k in list(map_to_tensors):
+            map_to_tensors[k] = map_to_tensors[k][valid]
 
-            if self.obb_center is not None and self.obb_rotation is not None and self.obb_scale is not None:
-                crop_obb = OrientedBox.from_params(self.obb_center, self.obb_rotation, self.obb_scale)
-                assert crop_obb is not None
-                mask = crop_obb.within(torch.from_numpy(positions)).numpy()
-                for k, t in map_to_tensors.items():
-                    map_to_tensors[k] = map_to_tensors[k][mask]
+        # Build points after validity filter
+        pts = np.stack([map_to_tensors["x"], map_to_tensors["y"], map_to_tensors["z"]], axis=1)
 
-                n = map_to_tensors["x"].shape[0]
-                count = n
+        # Box filter
+        bounds = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [-0.5, 0.5]}
+        in_box = (
+            (pts[:,0] >= bounds["x"][0]) & (pts[:,0] <= bounds["x"][1]) &
+            (pts[:,1] >= bounds["y"][0]) & (pts[:,1] <= bounds["y"][1]) &
+            (pts[:,2] >= bounds["z"][0]) & (pts[:,2] <= bounds["z"][1])
+        )
 
-            # If the model is Bruisefacto (has strawberry), filter to export only strawberry gaussians.
-            if hasattr(model, "strawberry"):
-                prev_count = map_to_tensors["x"].shape[0]
-                normalized_strawberry_tensors = torch.sigmoid(model.strawberry)
-                # If an OBB filter was applied, use the same mask for strawberry values.
-                if self.obb_center is not None and self.obb_rotation is not None and self.obb_scale is not None:
-                    strawberry_array = normalized_strawberry_tensors.detach().cpu().numpy()[mask]  # type: ignore
-                else:
-                    strawberry_array = normalized_strawberry_tensors.detach().cpu().numpy()
-                # Use a threshold to decide which gaussians are "strawberry"
-                strawberry_filter = strawberry_array.squeeze(-1) > 0.3
+        # Strawberry threshold
+        straw_thresh = map_to_tensors["strawberry_prob"] > strawberry_threshold
 
-                if self.ply_color_mode == "rgb":
-                    reds = map_to_tensors["red"].astype(np.float32)
-                    greens = map_to_tensors["green"].astype(np.float32)
-                    blues = map_to_tensors["blue"].astype(np.float32)
+        # Final combined mask
+        final_mask = in_box & straw_thresh
+        for k in list(map_to_tensors):
+            map_to_tensors[k] = map_to_tensors[k][final_mask]
+        count = int(np.sum(final_mask))
 
-                    # Avoid division by zero
-                    sums = reds + greens + blues + 1e-6
-                    red_fraction = reds / sums
-
-                    # "Kind of red" threshold
-                    red_filter = red_fraction > 0.4
-
-                    # Combine color filter with strawberry filter
-                    final_filter = np.logical_and(strawberry_filter, red_filter)
-                else:
-                    # If not in RGB mode, just use strawberry filter
-                    final_filter = strawberry_filter
-
-                for k, t in map_to_tensors.items():
-                    map_to_tensors[k] = t[final_filter]
-                n = map_to_tensors["x"].shape[0]
-                count = n
-                CONSOLE.print(f"[bold green]Filtered out {prev_count - n} gaussians out of {prev_count} because they were not strawberry.")
-
-        # post optimization, it is possible have NaN/Inf values in some attributes
-        # to ensure the exported ply file has finite values, we enforce finite filters.
-        select = np.ones(n, dtype=bool)
-        for k, t in map_to_tensors.items():
-            n_before = np.sum(select)
-            select = np.logical_and(select, np.isfinite(t).all(axis=-1))
-            n_after = np.sum(select)
-            if n_after < n_before:
-                CONSOLE.print(f"{n_before - n_after} NaN/Inf elements in {k}")
-        nan_count = np.sum(select) - n
-
-        # filter gaussians that have opacities < 1/255, because they are skipped in cuda rasterization
-        low_opacity_gaussians = (map_to_tensors["opacity"]).squeeze(axis=-1) < -5.5373  # logit(1/255)
-        lowopa_count = np.sum(low_opacity_gaussians)
-        select[low_opacity_gaussians] = 0
-
-        if np.sum(select) < n:
-            CONSOLE.print(
-                f"{nan_count} Gaussians have NaN/Inf and {lowopa_count} have low opacity, only export {np.sum(select)}/{n}"
-            )
-            for k, t in map_to_tensors.items():
-                map_to_tensors[k] = map_to_tensors[k][select]
-            count = np.sum(select)
-
-        ExportGaussianSplat.write_ply(str(filename), count, map_to_tensors)
+        # Write PLY
+        Export3DGS.write_ply(str(filename), count, map_to_tensors)
 
 
-Commands = tyro.conf.FlagConversionOff[
-    Union[
-        Annotated[ExportGaussianSplat, tyro.conf.subcommand(name="bruisefacto")],
-    ]
-]
+def create_axes_points(scale=1.0, num_points=40, highlight_axis=None):
+    """Create coordinate axes points with optional highlighting of a specific axis.
+    
+    Args:
+        scale: Scale of the axes
+        num_points: Number of points per axis
+        highlight_axis: Which axis to highlight ('x', 'y', 'z', or None for all)
+    """
+    # Create points along the X axis from the origin to 'scale'
+    x_vals = np.linspace(-1 * scale, scale, num_points)[:, None]
+    x_axis = np.hstack([x_vals, np.zeros_like(x_vals), np.zeros_like(x_vals)])
+    # Create points along the Y axis
+    y_vals = np.linspace(-1 * scale, scale, num_points)[:, None]
+    y_axis = np.hstack([np.zeros_like(y_vals), y_vals, np.zeros_like(y_vals)])
+    # Create points along the Z axis
+    z_vals = np.linspace(-1 * scale, scale, num_points)[:, None]
+    z_axis = np.hstack([np.zeros_like(z_vals), np.zeros_like(z_vals), z_vals])
+    
+    # Concatenate all axis points together
+    axes_points = np.concatenate([x_axis, y_axis, z_axis], axis=0)
+    
+    # Color the axes based on highlight_axis
+    default_color = np.array([0.3, 0.3, 0.3])  # Dark gray for non-highlighted axes
+    
+    if highlight_axis == 'x':
+        x_colors = np.tile(np.array([[1, 0, 0]]), (num_points, 1))  # Red for X
+        y_colors = np.tile(default_color[None, :], (num_points, 1))
+        z_colors = np.tile(default_color[None, :], (num_points, 1))
+    elif highlight_axis == 'y':
+        x_colors = np.tile(default_color[None, :], (num_points, 1))
+        y_colors = np.tile(np.array([[0, 1, 0]]), (num_points, 1))  # Green for Y
+        z_colors = np.tile(default_color[None, :], (num_points, 1))
+    elif highlight_axis == 'z':
+        x_colors = np.tile(default_color[None, :], (num_points, 1))
+        y_colors = np.tile(default_color[None, :], (num_points, 1))
+        z_colors = np.tile(np.array([[0, 0, 1]]), (num_points, 1))  # Blue for Z
+    else:
+        # Default: color all axes normally (for backward compatibility)
+        x_colors = np.tile(np.array([[1, 0, 0]]), (num_points, 1))
+        y_colors = np.tile(np.array([[0, 1, 0]]), (num_points, 1))
+        z_colors = np.tile(np.array([[0, 0, 1]]), (num_points, 1))
+    
+    axes_colors = np.concatenate([x_colors, y_colors, z_colors], axis=0)
+    
+    axes_pcd = o3d.geometry.PointCloud()
+    axes_pcd.points = o3d.utility.Vector3dVector(axes_points)
+    axes_pcd.colors = o3d.utility.Vector3dVector(axes_colors)
+    
+    return axes_pcd
 
 
-def entrypoint():
-    """Entrypoint for use with pyproject scripts."""
-    tyro.extras.set_accent_color("bright_yellow")
-    tyro.cli(Commands).main()
+# Commands = tyro.conf.FlagConversionOff[
+#     Union[
+#         Annotated[Export3DGS, tyro.conf.subcommand(name="bruisefacto")],
+#     ]
+# ]
 
+# def entrypoint():
+#     """Entrypoint for use with pyproject scripts."""
+#     tyro.extras.set_accent_color("bright_yellow")
+#     tyro.cli(Commands).main()
 
-if __name__ == "__main__":
-    entrypoint()
+# if __name__ == "__main__":
+#     entrypoint()
 
-
-def get_parser_fn():
-    """Get the parser function for the sphinx docs."""
-    return tyro.extras.get_parser(Commands)  # noqa
+# def get_parser_fn():
+#     """Get the parser function for the sphinx docs."""
+#     return tyro.extras.get_parser(Commands)  # noqa
