@@ -35,18 +35,24 @@ bruisefacto_method = MethodSpecification(
                 freeze_rgb=False,
                 freeze_bruise=False,
                 freeze_strawberry=False,
-                bruise_weight=1,
-                strawberry_weight=0.2,
+                bruise_weight=1.0,
+                strawberry_weight=1.0,
+                # Staged training parameters
+                enable_staged_training=True,
+                stage1_end_ratio=1.0,  # End stage 1 at 90% of total iterations
+                stage1_bruise_weight=1.0,  # No bruise loss in stage 1
+                stage1_strawberry_weight=1.0,  # No strawberry loss in stage 1
+                verbose_staging_debug=False,  # Enable verbose debugging for staged training
             ),
         ),
         
         optimizers={
             "bruise": {
-                "optimizer": AdamOptimizerConfig(lr=1e-4, eps=1e-15),
+                "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
                 "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-6, max_steps=30000),
             },
             "strawberry": {
-                "optimizer": AdamOptimizerConfig(lr=5e-5, eps=1e-15),
+                "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
                 "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-6, max_steps=30000),
             },
             "means": {

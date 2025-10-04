@@ -196,15 +196,30 @@ class Export3DGS(Exporter):
             map_to_tensors["blue"][:]  = 0
             map_to_tensors["blue"][bruise_mask] = 255
 
+        # Save raw gaussian splat data (before any filtering)
+        raw_filename = self.output_dir / f"raw_{self.output_filename}"
+        raw_count = map_to_tensors["x"].shape[0]
+        Export3DGS.write_ply(str(raw_filename), raw_count, map_to_tensors)
+        CONSOLE.print(f"Raw gaussian splat point cloud saved to: {raw_filename}")
+
         # Filter out non-finite & low-opacity
         length = map_to_tensors["x"].shape[0]
         valid = np.isfinite(map_to_tensors["x"]) & np.isfinite(map_to_tensors["y"]) & np.isfinite(map_to_tensors["z"])
         valid &= map_to_tensors["opacity"] >= (1/255)
+        
+        # Create intermediate tensors for validity-filtered data
+        validity_filtered_tensors = OrderedDict()
         for k in list(map_to_tensors):
-            map_to_tensors[k] = map_to_tensors[k][valid]
+            validity_filtered_tensors[k] = map_to_tensors[k][valid]
+        
+        # Save validity-filtered point cloud
+        validity_filename = self.output_dir / f"validity_filtered_{self.output_filename}"
+        validity_count = validity_filtered_tensors["x"].shape[0]
+        Export3DGS.write_ply(str(validity_filename), validity_count, validity_filtered_tensors)
+        CONSOLE.print(f"Validity-filtered point cloud saved to: {validity_filename}")
 
         # Build points after validity filter
-        pts = np.stack([map_to_tensors["x"], map_to_tensors["y"], map_to_tensors["z"]], axis=1)
+        pts = np.stack([validity_filtered_tensors["x"], validity_filtered_tensors["y"], validity_filtered_tensors["z"]], axis=1)
 
         # Box filter
         bounds = {"x": [-0.5, 0.5], "y": [-0.5, 0.5], "z": [-0.5, 0.5]}
@@ -215,16 +230,17 @@ class Export3DGS(Exporter):
         )
 
         # Strawberry threshold
-        straw_thresh = map_to_tensors["strawberry_prob"] > strawberry_threshold
+        straw_thresh = validity_filtered_tensors["strawberry_prob"] > strawberry_threshold
 
         # Final combined mask
         final_mask = in_box & straw_thresh
-        for k in list(map_to_tensors):
-            map_to_tensors[k] = map_to_tensors[k][final_mask]
+        for k in list(validity_filtered_tensors):
+            map_to_tensors[k] = validity_filtered_tensors[k][final_mask]
         count = int(np.sum(final_mask))
 
-        # Write PLY
+        # Write final filtered PLY
         Export3DGS.write_ply(str(filename), count, map_to_tensors)
+        CONSOLE.print(f"Final filtered point cloud saved to: {filename}")
 
 
 def create_axes_points(scale=1.0, num_points=40, highlight_axis=None):

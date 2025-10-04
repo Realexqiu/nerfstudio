@@ -41,6 +41,13 @@ class BruisefactoModelConfig(SplatfactoModelConfig):
     freeze_strawberry: bool = False
     bruise_weight: float = 1
     strawberry_weight: float = 0.2
+    
+    # Staged training parameters
+    enable_staged_training: bool = True
+    stage1_end_ratio: float = 0.9  # End stage 1 at 90% of total iterations
+    stage1_bruise_weight: float = 0.0  # No bruise loss in stage 1
+    stage1_strawberry_weight: float = 0.0  # No strawberry loss in stage 1
+    verbose_staging_debug: bool = True  # Enable verbose debugging for staged training
 
 class BruisefactoModel(SplatfactoModel):
     """Bruisefacto Model."""
@@ -65,6 +72,134 @@ class BruisefactoModel(SplatfactoModel):
         param_groups["bruise"] = [self.gauss_params["bruise"]]
         param_groups["strawberry"] = [self.gauss_params["strawberry"]]
         return param_groups
+    
+    def get_current_training_stage(self) -> int:
+        """Determine current training stage based on step count.
+        
+        Returns:
+            1: Stage 1 - RGB-only training
+            2: Stage 2 - Bruise/strawberry refinement with frozen Gaussians
+        """
+        if not self.config.enable_staged_training:
+            return 1  # Always stage 1 if staged training is disabled
+            
+        # Get max iterations from trainer config (default 15000 for bruisefacto)
+        # The max_num_iterations is set in the trainer config, not the model config
+        max_iterations = 15000  # Default for bruisefacto
+        stage1_end_step = int(max_iterations * self.config.stage1_end_ratio)
+        
+        if self.step < stage1_end_step:
+            return 1
+        else:
+            return 2
+    
+    def freeze_gaussian_parameters(self, freeze: bool = True):
+        """Freeze or unfreeze standard Gaussian parameters (not bruise/strawberry).
+        
+        Args:
+            freeze: If True, freeze parameters. If False, unfreeze them.
+        """
+        gaussian_param_names = ["means", "scales", "quats", "features_dc", "features_rest", "opacities"]
+        
+        if self.config.verbose_staging_debug:
+            CONSOLE.print(f"[bold blue]→ {'Freezing' if freeze else 'Unfreezing'} Gaussian parameters: {gaussian_param_names}")
+        
+        # for param_name in gaussian_param_names:
+        #     if param_name in self.gauss_params:
+        #         old_requires_grad = self.gauss_params[param_name].requires_grad
+        #         self.gauss_params[param_name].requires_grad = not freeze
+        #         if self.config.verbose_staging_debug:
+        #             CONSOLE.print(f"  {param_name}: {old_requires_grad} -> {not freeze}")
+                
+        #         # Zero out gradients when freezing to prevent accumulated gradients from affecting training
+        #         if freeze and self.gauss_params[param_name].grad is not None:
+        #             self.gauss_params[param_name].grad.zero_()
+        
+        # import pdb; pdb.set_trace()
+
+        # SIMPLIFIED FIX: Use very low learning rates instead of complex optimizer manipulation
+        if hasattr(self, 'optimizers') and self.optimizers is not None:
+            if freeze:
+                # Stage 2: Set very low LR for frozen parameters (effectively frozen)
+                for param_name in gaussian_param_names:
+                    if param_name in self.optimizers:
+                        for param_group in self.optimizers[param_name].param_groups:
+                            CONSOLE.print(f"[bold red]→ Setting LR=1e-10 for {param_name}")
+                            param_group['lr'] = 1e-20  # Effectively frozen
+                            # import pdb; pdb.set_trace()
+                
+                # Keep bruise/strawberry optimizers at normal rates - DON'T modify them
+                if self.config.verbose_staging_debug:
+                    CONSOLE.print(f"[bold yellow]→ Set LR=1e-10 for frozen parameters")
+                    CONSOLE.print(f"[bold green]→ Bruise/strawberry optimizers unchanged")
+            else:
+                # Stage 1: Let scheduler handle learning rates naturally
+                if self.config.verbose_staging_debug:
+                    CONSOLE.print(f"[bold green]→ All optimizers use scheduler-controlled LRs")
+        
+        # # Also handle camera parameters if they exist
+        # if hasattr(self, 'camera_optimizer') and self.camera_optimizer is not None:
+        #     try:
+        #         if self.config.verbose_staging_debug:
+        #             CONSOLE.print(f"[bold blue]→ {'Freezing' if freeze else 'Unfreezing'} camera parameters")
+        #         for optimizer_name, optimizer in self.camera_optimizer.optimizers.items():
+        #             if hasattr(optimizer, 'param_groups'):
+        #                 for param_group in optimizer.param_groups:
+        #                     for param in param_group['params']:
+        #                         param.requires_grad = not freeze
+        #                         if freeze and param.grad is not None:
+        #                             param.grad.zero_()
+        #     except (AttributeError, KeyError) as e:
+        #         # If camera optimizer structure is different, skip camera parameter freezing
+        #         if self.config.verbose_staging_debug:
+        #             CONSOLE.print(f"[bold yellow]→ Warning: Could not freeze camera parameters: {e}")
+        #         pass
+                
+        # # Verify bruise/strawberry parameters remain trainable when freezing others
+        # if freeze:
+        #     if self.config.verbose_staging_debug:
+        #         CONSOLE.print(f"[bold green]→ Ensuring bruise/strawberry parameters remain trainable")
+            
+        #     # Ensure bruise/strawberry parameters remain trainable
+        #     self.gauss_params["bruise"].requires_grad = True
+        #     self.gauss_params["strawberry"].requires_grad = True
+            
+        #     # Keep bruise/strawberry parameters trainable - no special gradient handling needed
+            
+        #     if self.config.verbose_staging_debug:
+        #         CONSOLE.print(f"  bruise: {self.gauss_params['bruise'].requires_grad}")
+        #         CONSOLE.print(f"  strawberry: {self.gauss_params['strawberry'].requires_grad}")
+        #         CONSOLE.print(f"  ❗ Preserving gradients for bruise/strawberry parameters")
+    
+    def apply_staged_training_logic(self):
+        """Apply staging logic based on current step."""
+        if not self.config.enable_staged_training:
+            return
+            
+        current_stage = self.get_current_training_stage()
+        
+        # Only apply changes when stage transitions occur to avoid constant logging
+        if not hasattr(self, '_last_stage') or self._last_stage != current_stage:
+            if current_stage == 2:
+                # Stage 2: Freeze Gaussian parameters, only train bruise/strawberry
+                CONSOLE.print(f"[bold yellow]→ Switching to Stage 2 at step {self.step}: Freezing Gaussian parameters, focusing on bruise/strawberry refinement")
+                self.freeze_gaussian_parameters(freeze=True)
+                # Ensure bruise/strawberry parameters remain trainable
+                self.gauss_params["bruise"].requires_grad = True
+                self.gauss_params["strawberry"].requires_grad = True
+                
+                # Store initial values for tracking changes
+                if not hasattr(self, '_stage2_initial_bruise'):
+                    self._stage2_initial_bruise = self.gauss_params["bruise"].data.clone()
+                    self._stage2_initial_strawberry = self.gauss_params["strawberry"].data.clone()
+                    CONSOLE.print(f"[bold cyan]→ Stored initial Stage 2 parameter values for change tracking")
+            else:
+                # Stage 1: All parameters trainable
+                if hasattr(self, '_last_stage'):  # Only log if not the very first call
+                    CONSOLE.print(f"[bold green]→ Stage 1 at step {self.step}: Training all parameters with RGB focus")
+                self.freeze_gaussian_parameters(freeze=False)
+            
+            self._last_stage = current_stage
 
     def load_state_dict(self, dict, **kwargs):  # type: ignore
         # resize the parameters to match the new number of points
@@ -98,9 +233,9 @@ class BruisefactoModel(SplatfactoModel):
         quats = torch.nn.Parameter(random_quat_tensor(num_points))
         dim_sh = num_sh_bases(self.config.sh_degree)
 
-        # Randomly initialize strawberry and bruise masks (like original working implementation)
-        bruise = torch.nn.Parameter(torch.rand(means.shape[0], 1))
-        strawberry = torch.nn.Parameter(torch.rand(means.shape[0], 1))
+        # Initialize bruise and strawberry parameters to 0 (neutral starting point)
+        bruise = torch.nn.Parameter(torch.zeros(means.shape[0], 1))
+        strawberry = torch.nn.Parameter(torch.zeros(means.shape[0], 1))
 
         # We can have colors without points.
         if (self.seed_points is not None and not self.config.random_init and self.seed_points[1].shape[0] > 0):
@@ -339,14 +474,17 @@ class BruisefactoModel(SplatfactoModel):
                 self.gauss_params, self.optimizers, self.strategy_state, self.step, self.info
             )
 
-        # Perform bruise mask rendering (gradients from this will be used for loss computation)
+        # Perform bruise mask rendering (gradients ONLY flow to bruise_crop)
+        current_stage = self.get_current_training_stage()
+    
         bruise_mask, _, _ = rasterization(
-            means=means_crop,
-            quats=quats_crop,
-            scales=torch.exp(scales_crop),
-            opacities=torch.sigmoid(opacities_crop).squeeze(-1),
-            # replace colors with 3x bruise_crop
-            colors = repeat(bruise_crop, 'n 1 -> n 1 3'),
+            means=means_crop.detach(),  # Block gradients to means
+            quats=quats_crop.detach(),  # Block gradients to quats  
+            scales=torch.exp(scales_crop.detach()),  # Block gradients to scales
+            opacities=torch.sigmoid(opacities_crop.detach()).squeeze(-1),  # Block gradients to opacities
+            # Only bruise_crop maintains gradients
+            # colors = torch.sigmoid(repeat(bruise_crop, 'n 1 -> n 3')),
+            colors = bruise_crop,
             viewmats=viewmat,  # [1, 4, 4]
             Ks=K,  # [1, 3, 3]
             width=W,
@@ -355,21 +493,31 @@ class BruisefactoModel(SplatfactoModel):
             near_plane=0.01,
             far_plane=1e10,
             render_mode=render_mode,
-            sh_degree=0,
+            sh_degree=None,
             sparse_grad=False,
             absgrad=self.strategy.absgrad,
             rasterize_mode=self.config.rasterize_mode,
         )
-        bruise_mask = bruise_mask[..., 0:1]  # Use the first channel for the mask
+      
+        # Process bruise mask to match depth format [H, W, 1]
+        bruise_mask = bruise_mask.squeeze()  # Remove all singleton dimensions
+        if bruise_mask.dim() == 3:
+            bruise_mask = bruise_mask[..., 0]  # Take first channel if 3D
+        elif bruise_mask.dim() == 1:
+            bruise_mask = bruise_mask.view(H, W)
+        # Ensure exactly [H, W, 1] like depth
+        if bruise_mask.dim() == 2:
+            bruise_mask = bruise_mask.unsqueeze(-1)
 
-        # Perform strawberry mask rendering (gradients from this will be used for loss computation)
         strawberry_mask, _, _ = rasterization(
-            means=means_crop,
-            quats=quats_crop,
-            scales=torch.exp(scales_crop),
-            opacities=torch.sigmoid(opacities_crop).squeeze(-1),
-            # replace colors with 3x strawberry_crop
-            colors = repeat(strawberry_crop, 'n 1 -> n 1 3'),
+            means=means_crop.detach(),  # Block gradients to means
+            quats=quats_crop.detach(),  # Block gradients to quats
+            scales=torch.exp(scales_crop.detach()),  # Block gradients to scales
+            opacities=torch.sigmoid(opacities_crop.detach()).squeeze(-1),  # Block gradients to opacities
+            # Only strawberry_crop maintains gradients
+            # colors = torch.sigmoid(repeat(strawberry_crop, 'n 1 -> n 3')).contiguous(),
+            # colors = torch.sigmoid(strawberry_crop),
+            colors = strawberry_crop,
             viewmats=viewmat,  # [1, 4, 4]
             Ks=K,  # [1, 3, 3]
             width=W,
@@ -378,12 +526,24 @@ class BruisefactoModel(SplatfactoModel):
             near_plane=0.01,
             far_plane=1e10,
             render_mode=render_mode,
-            sh_degree=0,
+            sh_degree=None,
             sparse_grad=False,
             absgrad=self.strategy.absgrad,
             rasterize_mode=self.config.rasterize_mode,
         )
-        strawberry_mask = strawberry_mask[..., 0:1]  # Use the first channel for the mask
+        # clip between 0 and 1
+        bruise_mask = torch.clamp(bruise_mask, 0.0, 1.0)
+        strawberry_mask = torch.clamp(strawberry_mask, 0.0, 1.0)
+
+        # Process strawberry mask to match depth format [H, W, 1]
+        strawberry_mask = strawberry_mask.squeeze()  # Remove all singleton dimensions
+        if strawberry_mask.dim() == 3:
+            strawberry_mask = strawberry_mask[..., 0]  # Take first channel if 3D
+        elif strawberry_mask.dim() == 1:
+            strawberry_mask = strawberry_mask.view(H, W)
+        # Ensure exactly [H, W, 1] like depth
+        if strawberry_mask.dim() == 2:
+            strawberry_mask = strawberry_mask.unsqueeze(-1)
 
         alpha = alpha[:, ...]
 
@@ -407,12 +567,12 @@ class BruisefactoModel(SplatfactoModel):
 
         # Add overlay output for visualizing bruise mask in splat
         bruise_color = torch.tensor([0.5, 0.0, 0.5], device=rgb.device, dtype=rgb.dtype)  # purple
-        bruise_overlay = bruise_mask.squeeze(0).expand(-1, -1, 3) * bruise_color  # [H, W, 3]
+        bruise_overlay = bruise_mask.expand(-1, -1, 3) * bruise_color  # [H, W, 3]
         alpha_overlay = 0.7
         rgb_with_bruise = alpha_overlay * bruise_overlay + (1 - alpha_overlay) * rgb.squeeze(0)  # [H, W, 3]
 
         strawberry_color = torch.tensor([1.0, 0.0, 0.0], device=rgb.device, dtype=rgb.dtype)  
-        strawberry_overlay = strawberry_mask.squeeze(0).expand(-1, -1, 3) * strawberry_color  # [H, W, 3]
+        strawberry_overlay = strawberry_mask.expand(-1, -1, 3) * strawberry_color  # [H, W, 3]
 
         # combined_overlay = bruise_overlay + strawberry_overlay
         combined_overlay = torch.maximum(bruise_overlay, strawberry_overlay)
@@ -420,16 +580,36 @@ class BruisefactoModel(SplatfactoModel):
         
         rgb_with_strawberry_bruise = alpha_overlay * combined_overlay + (1 - alpha_overlay) * rgb.squeeze(0)
 
+        # Ensure all outputs have correct dimensions for viewer
+        rgb_out = rgb.squeeze(0)  # [H, W, 3]
+        accumulation_out = alpha.squeeze(0)  # [H, W]
+        
+        # Ensure depth is properly dimensioned (viewer expects [H, W, 1])
+        if depth_im is not None:
+            depth_out = depth_im
+            if depth_out.dim() == 2:  # [H, W] -> [H, W, 1]
+                depth_out = depth_out.unsqueeze(-1)
+            elif depth_out.dim() == 3 and depth_out.shape[-1] != 1:
+                depth_out = depth_out[..., :1]  # Take first channel and keep as [H, W, 1]
+        else:
+            depth_out = None
+            
+        # Ensure background is properly dimensioned
+        if background.dim() == 1:  # [3]
+            background_out = background.expand(H, W, 3)  # [H, W, 3]
+        else:
+            background_out = background  # Already [H, W, 3]
+
         return {
-            "rgb": rgb.squeeze(0),  # type: ignore
-            "bruise": bruise_mask.squeeze(0),  # type: ignore
-            "strawberry": strawberry_mask.squeeze(0),
-            "strawberry_with_bruise": rgb_with_strawberry_bruise,
-            "rgb_with_bruise": rgb_with_bruise,  # type: ignores
-            "depth": depth_im,  # type: ignore
-            "accumulation": alpha.squeeze(0),  # type: ignore
-            "background": background,  # type: ignore
-        }  # type: ignore    
+            "rgb": rgb_out,  # [H, W, 3]
+            "bruise": bruise_mask,  # [H, W, 1]
+            "strawberry": strawberry_mask,  # [H, W, 1]
+            "strawberry_with_bruise": rgb_with_strawberry_bruise,  # [H, W, 3]
+            "rgb_with_bruise": rgb_with_bruise,  # [H, W, 3]
+            "depth": depth_out,  # [H, W, 1] or None
+            "accumulation": accumulation_out,  # [H, W]
+            "background": background_out,  # [H, W, 3]
+        }    
     
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
         """Computes and returns the losses dict.
@@ -439,6 +619,10 @@ class BruisefactoModel(SplatfactoModel):
             batch: ground truth batch corresponding to outputs
             metrics_dict: dictionary of metrics, some of which we can use for loss
         """
+        # Apply staged training logic
+        self.apply_staged_training_logic()
+        current_stage = self.get_current_training_stage()
+        
         # Compute loss for bruise parameter
         pred_bruise = outputs["bruise"]
         
@@ -449,7 +633,28 @@ class BruisefactoModel(SplatfactoModel):
         if bruise_mask_in_batch:
             # batch["bruise_mask"] : [H, W, 1]        
             bruise_mask = downscale_mask_to_pred_shape(batch["bruise_mask"], pred_bruise).to(self.device)
-            bruise_mask_loss = F.binary_cross_entropy_with_logits(pred_bruise, bruise_mask)
+            
+            # # Debug mask statistics
+            # if current_stage == 2 and self.step % 100 == 0 and self.config.verbose_staging_debug:  # Log every 100 steps in stage 2
+            #     CONSOLE.print(f"[bold cyan]→ Step {self.step} Bruise Mask Debug:")
+            #     CONSOLE.print(f"  Original mask shape: {batch['bruise_mask'].shape}")
+            #     CONSOLE.print(f"  Downscaled mask shape: {bruise_mask.shape}")
+            #     CONSOLE.print(f"  Pred bruise shape: {pred_bruise.shape}")
+            #     CONSOLE.print(f"  Mask min/max: {bruise_mask.min().item():.3f}/{bruise_mask.max().item():.3f}")
+            #     CONSOLE.print(f"  Mask mean: {bruise_mask.mean().item():.3f}")
+            #     CONSOLE.print(f"  Pred min/max: {pred_bruise.min().item():.3f}/{pred_bruise.max().item():.3f}")
+            #     CONSOLE.print(f"  Pred mean: {pred_bruise.mean().item():.3f}")
+
+           
+            
+            bruise_mask_loss = F.mse_loss(pred_bruise.squeeze(-1), bruise_mask.squeeze(-1))
+            
+            # # CRITICAL DEBUG: Test gradient flow directly
+            # if current_stage == 2 and self.step % 100 == 0 and self.config.verbose_staging_debug:
+            #     CONSOLE.print(f"[bold red]→ TESTING BRUISE GRADIENT FLOW:")
+            #     CONSOLE.print(f"  pred_bruise.requires_grad: {pred_bruise.requires_grad}")
+            #     CONSOLE.print(f"  bruise_mask_loss.requires_grad: {bruise_mask_loss.requires_grad}")
+            #     CONSOLE.print(f"  bruise_param.requires_grad: {self.gauss_params['bruise'].requires_grad}")
 
             # # Only apply loss if mask has sufficient content (>1% of pixels)
             # mask_ratio = torch.mean(bruise_mask)
@@ -461,6 +666,8 @@ class BruisefactoModel(SplatfactoModel):
             
         else:
             bruise_mask_loss = torch.tensor(0.0).to(self.device)
+            if current_stage == 2 and self.step % 100 == 0 and self.config.verbose_staging_debug:
+                CONSOLE.print(f"[bold red]→ Step {self.step}: No bruise mask in batch!")
 
         # Compute loss for strawberry parameter
         pred_strawberry = outputs["strawberry"]
@@ -469,16 +676,75 @@ class BruisefactoModel(SplatfactoModel):
             # batch["strawberry_mask"] : [H, W, 1]        
             strawberry_mask = downscale_mask_to_pred_shape(batch["strawberry_mask"], pred_strawberry).to(self.device)
             
+            # # Debug mask statistics
+            # if current_stage == 2 and self.step % 100 == 0 and self.config.verbose_staging_debug:  # Log every 100 steps in stage 2
+            #     CONSOLE.print(f"[bold cyan]→ Step {self.step} Strawberry Mask Debug:")
+            #     CONSOLE.print(f"  Original mask shape: {batch['strawberry_mask'].shape}")
+            #     CONSOLE.print(f"  Downscaled mask shape: {strawberry_mask.shape}")
+            #     CONSOLE.print(f"  Pred strawberry shape: {pred_strawberry.shape}")
+            #     CONSOLE.print(f"  Mask min/max: {strawberry_mask.min().item():.3f}/{strawberry_mask.max().item():.3f}")
+            #     CONSOLE.print(f"  Mask mean: {strawberry_mask.mean().item():.3f}")
+            #     CONSOLE.print(f"  Pred min/max: {pred_strawberry.min().item():.3f}/{pred_strawberry.max().item():.3f}")
+            #     CONSOLE.print(f"  Pred mean: {pred_strawberry.mean().item():.3f}")
+            
             # Only apply loss if mask has sufficient content (>1% of pixels)
             mask_ratio = torch.mean(strawberry_mask)
             if mask_ratio > 0.01:
                 # pred_strawberry contains logits from rasterization, so use BCE_with_logits
-                strawberry_mask_loss = F.binary_cross_entropy_with_logits(pred_strawberry, strawberry_mask)
+                strawberry_mask_loss = F.mse_loss(pred_strawberry.squeeze(-1), strawberry_mask.squeeze(-1))
+
+                # # Debug: Plot strawberry prediction vs ground truth mask
+                # if self.step % 100 == 0:
+                #     # import pdb; pdb.set_trace()
+
+                #     import matplotlib.pyplot as plt
+                #     import numpy as np
+                    
+                #     # Convert to numpy for plotting
+                #     pred_strawberry_np = pred_strawberry.detach().cpu().numpy().squeeze()
+                #     strawberry_mask_np = strawberry_mask.detach().cpu().numpy().squeeze()
+                    
+                #     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+                    
+                #     # Plot prediction (after sigmoid)
+                #     axes[0].imshow(pred_strawberry_np, cmap='gray', vmin=0, vmax=1)
+                #     axes[0].set_title(f'Pred Strawberry (Step {self.step})\nMin: {pred_strawberry_np.min():.3f}, Max: {pred_strawberry_np.max():.3f}')
+                #     axes[0].axis('off')
+                    
+                #     # Plot ground truth mask
+                #     axes[1].imshow(strawberry_mask_np, cmap='gray', vmin=0, vmax=1)
+                #     axes[1].set_title(f'GT Strawberry Mask\nMin: {strawberry_mask_np.min():.3f}, Max: {strawberry_mask_np.max():.3f}')
+                #     axes[1].axis('off')
+                    
+                #     # Plot difference
+                #     diff = np.abs(pred_strawberry_np - strawberry_mask_np)
+                #     axes[2].imshow(diff, cmap='gray', vmin=0, vmax=1)
+                #     axes[2].set_title(f'Absolute Difference\nMean: {diff.mean():.3f}')
+                #     axes[2].axis('off')
+                    
+                #     plt.tight_layout()
+                #     plt.savefig(f'strawberry_debug_step_{self.step}.png', dpi=150, bbox_inches='tight')
+                #     plt.close()
+                    
+                #     CONSOLE.print(f"[bold green]→ Saved strawberry debug plot: strawberry_debug_step_{self.step}.png")
+                
+                
+                # # CRITICAL DEBUG: Test gradient flow directly
+                # if current_stage == 2 and self.step % 100 == 0 and self.config.verbose_staging_debug:
+                #     CONSOLE.print(f"[bold red]→ TESTING STRAWBERRY GRADIENT FLOW:")
+                #     CONSOLE.print(f"  pred_strawberry.requires_grad: {pred_strawberry.requires_grad}")
+                #     CONSOLE.print(f"  strawberry_mask_loss.requires_grad: {strawberry_mask_loss.requires_grad}")
+                #     CONSOLE.print(f"  strawberry_param.requires_grad: {self.gauss_params['strawberry'].requires_grad}")
+                #     CONSOLE.print(f"  mask_ratio: {mask_ratio.item():.3f} (>0.01, so loss computed)")
             else:
                 strawberry_mask_loss = torch.tensor(0.0).to(self.device)
+                if current_stage == 2 and self.step % 100 == 0 and self.config.verbose_staging_debug:
+                    CONSOLE.print(f"[bold red]→ STRAWBERRY LOSS SKIPPED: mask_ratio {mask_ratio.item():.3f} <= 0.01")
             
         else:
             strawberry_mask_loss = torch.tensor(0.0).to(self.device)
+            if current_stage == 2 and self.step % 100 == 0 and self.config.verbose_staging_debug:
+                CONSOLE.print(f"[bold red]→ Step {self.step}: No strawberry mask in batch!")
         
         # Compute loss for RGB image
         gt_img = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
@@ -501,12 +767,30 @@ class BruisefactoModel(SplatfactoModel):
 
         lam = self.config.ssim_lambda  
         
-        bruise_loss_weighted = self.config.bruise_weight * bruise_mask_loss
-        strawberry_loss_weighted = self.config.strawberry_weight * strawberry_mask_loss
+        # Determine weights based on training stage
+        if current_stage == 1:
+            # Stage 1: Use stage1 weights (typically 0 for bruise/strawberry)
+            current_bruise_weight = self.config.stage1_bruise_weight
+            current_strawberry_weight = self.config.stage1_strawberry_weight
+        else:
+            # Stage 2: Use full weights for bruise/strawberry refinement
+            current_bruise_weight = self.config.bruise_weight
+            current_strawberry_weight = self.config.strawberry_weight
+        
+        bruise_loss_weighted = current_bruise_weight * bruise_mask_loss
+        strawberry_loss_weighted = current_strawberry_weight * strawberry_mask_loss
 
         # Create loss dictionary - combine all losses into main_loss like splatfacto
         rgb_loss = (1 - lam) * Ll1 + lam * simloss
-        total_loss = rgb_loss + bruise_loss_weighted + strawberry_loss_weighted
+        
+        # In stage 2, we might want to reduce or eliminate RGB loss to focus on bruise/strawberry
+        if current_stage == 2 and self.config.enable_staged_training:
+            # In stage 2, reduce RGB loss weight to focus on bruise/strawberry refinement
+            rgb_loss_weight = 0.1  # Reduced RGB weight in stage 2
+            total_loss = rgb_loss_weight * rgb_loss + bruise_loss_weighted + strawberry_loss_weighted
+        else:
+            # Stage 1: Normal RGB-focused training
+            total_loss = rgb_loss + bruise_loss_weighted + strawberry_loss_weighted
         
         loss_dict = {
             "main_loss": total_loss,
@@ -522,16 +806,63 @@ class BruisefactoModel(SplatfactoModel):
             # Add auxiliary parameter statistics for debugging
             loss_dict["bruise_mean_monitor"] = torch.mean(torch.sigmoid(self.bruise)).detach()
             loss_dict["strawberry_mean_monitor"] = torch.mean(torch.sigmoid(self.strawberry)).detach()
-            loss_dict["bruise_max_monitor"] = torch.max(torch.sigmoid(self.bruise)).detach()
-            loss_dict["strawberry_max_monitor"] = torch.max(torch.sigmoid(self.strawberry)).detach()
+            loss_dict["bruise_max_monitor"] = torch.max((self.bruise)).detach()
+            loss_dict["strawberry_max_monitor"] = torch.max((self.strawberry)).detach()
             
             # Debug mask loading and loss computation
             loss_dict["bruise_mask_in_batch"] = torch.tensor(float(bruise_mask_in_batch)).to(self.device)
             loss_dict["strawberry_mask_in_batch"] = torch.tensor(float(strawberry_mask_in_batch)).to(self.device)
             loss_dict["raw_bruise_loss"] = bruise_mask_loss.detach()
             loss_dict["raw_strawberry_loss"] = strawberry_mask_loss.detach()
-            loss_dict["bruise_weight_monitor"] = torch.tensor(self.config.bruise_weight).to(self.device)
-            loss_dict["strawberry_weight_monitor"] = torch.tensor(self.config.strawberry_weight).to(self.device)
+            loss_dict["bruise_weight_monitor"] = torch.tensor(current_bruise_weight).to(self.device)
+            loss_dict["strawberry_weight_monitor"] = torch.tensor(current_strawberry_weight).to(self.device)
+            
+            # Add staged training monitoring
+            loss_dict["training_stage_monitor"] = torch.tensor(float(current_stage)).to(self.device)
+            loss_dict["staged_training_enabled"] = torch.tensor(float(self.config.enable_staged_training)).to(self.device)
+            loss_dict["num_gaussians_monitor"] = torch.tensor(float(len(self.means))).to(self.device)
+            
+            # Stage 2 specific debugging
+            if current_stage == 2 and self.step % 100 == 0 and self.config.verbose_staging_debug:
+                CONSOLE.print(f"[bold magenta]→ Step {self.step} Stage 2 Debug:")
+                CONSOLE.print(f"  Number of Gaussians: {len(self.means)}")
+                CONSOLE.print(f"  Bruise param requires_grad: {self.gauss_params['bruise'].requires_grad}")
+                CONSOLE.print(f"  Strawberry param requires_grad: {self.gauss_params['strawberry'].requires_grad}")
+                CONSOLE.print(f"  Means param requires_grad: {self.gauss_params['means'].requires_grad}")
+                CONSOLE.print(f"  Opacities param requires_grad: {self.gauss_params['opacities'].requires_grad}")
+                CONSOLE.print(f"  Current bruise weight: {current_bruise_weight}")
+                CONSOLE.print(f"  Current strawberry weight: {current_strawberry_weight}")
+                
+                # Add gradient monitoring
+                bruise_grad = self.gauss_params['bruise'].grad
+                strawberry_grad = self.gauss_params['strawberry'].grad
+                CONSOLE.print(f"  Bruise grad: {bruise_grad is not None} (norm: {bruise_grad.norm().item() if bruise_grad is not None else 'None'})")
+                CONSOLE.print(f"  Strawberry grad: {strawberry_grad is not None} (norm: {strawberry_grad.norm().item() if strawberry_grad is not None else 'None'})")
+                CONSOLE.print(f"  Bruise value range: [{self.gauss_params['bruise'].min().item():.3f}, {self.gauss_params['bruise'].max().item():.3f}]")
+                CONSOLE.print(f"  Strawberry value range: [{self.gauss_params['strawberry'].min().item():.3f}, {self.gauss_params['strawberry'].max().item():.3f}]")
+                CONSOLE.print(f"  Raw bruise loss: {bruise_mask_loss.item():.6f}")
+                CONSOLE.print(f"  Raw strawberry loss: {strawberry_mask_loss.item():.6f}")
+                
+                # Add optimizer debugging
+                if hasattr(self, 'optimizers') and self.optimizers is not None:
+                    if 'bruise' in self.optimizers:
+                        bruise_lr = self.optimizers['bruise'].param_groups[0]['lr']
+                        CONSOLE.print(f"  Bruise optimizer LR: {bruise_lr}")
+                    if 'strawberry' in self.optimizers:
+                        strawberry_lr = self.optimizers['strawberry'].param_groups[0]['lr']
+                        CONSOLE.print(f"  Strawberry optimizer LR: {strawberry_lr}")
+                    if 'means' in self.optimizers:
+                        means_lr = self.optimizers['means'].param_groups[0]['lr']
+                        CONSOLE.print(f"  Means optimizer LR: {means_lr} (should be 0 in Stage 2)")
+                
+                # Track parameter changes since Stage 2 began
+                if hasattr(self, '_stage2_initial_bruise'):
+                    bruise_change = (self.gauss_params["bruise"].data - self._stage2_initial_bruise).abs().mean().item()
+                    strawberry_change = (self.gauss_params["strawberry"].data - self._stage2_initial_strawberry).abs().mean().item()
+                    CONSOLE.print(f"  Bruise param change since Stage 2: {bruise_change:.6f}")
+                    CONSOLE.print(f"  Strawberry param change since Stage 2: {strawberry_change:.6f}")
+                    if bruise_change < 1e-6 and strawberry_change < 1e-6:
+                        CONSOLE.print(f"  ⚠️  Parameters not updating! Check optimizer LRs.")
 
         if self.training:
             # Add loss from camera optimizer
@@ -540,6 +871,7 @@ class BruisefactoModel(SplatfactoModel):
                 loss_dict["tv_loss"] = 10 * total_variation_loss(self.bil_grids.grids)
 
         return loss_dict
+    
     
 def random_quat_tensor(N):
     """
